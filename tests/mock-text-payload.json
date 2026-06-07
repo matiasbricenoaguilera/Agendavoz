@@ -1,0 +1,19 @@
+{
+  "_comment": "Payload que simula un TEXTO de Telegram. No requiere Telegram real, ideal para probar Gemini NLU + Google Calendar.",
+  "update_id": 123456790,
+  "message": {
+    "message_id": 43,
+    "from": {
+      "id": 6184585797,
+      "is_bot": false,
+      "first_name": "María",
+      "language_code": "es"
+    },
+    "chat": {
+      "id": 6184585797,
+      "type": "private"
+    },
+    "date": 1749283200,
+    "text": "/start"
+  }
+}

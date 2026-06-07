@@ -1,0 +1,29 @@
+# Dependencias
+node_modules/
+
+# Variables de entorno — NUNCA subir
+.env
+.env.local
+.env.*.local
+
+# Netlify
+.netlify/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Archivos de audio temporales usados en pruebas
+tests/*.ogg
+tests/*.oga
+tests/*.mp3

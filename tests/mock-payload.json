@@ -1,0 +1,28 @@
+{
+  "_comment": "Payload que simula un mensaje de VOZ de Telegram. Úsalo con test-local.js.",
+  "update_id": 123456789,
+  "message": {
+    "message_id": 42,
+    "from": {
+      "id": 6184585797,
+      "is_bot": false,
+      "first_name": "María",
+      "last_name": "González",
+      "language_code": "es"
+    },
+    "chat": {
+      "id": 6184585797,
+      "first_name": "María",
+      "last_name": "González",
+      "type": "private"
+    },
+    "date": 1749283200,
+    "voice": {
+      "duration": 6,
+      "mime_type": "audio/ogg",
+      "file_id": "REEMPLAZA_CON_UN_FILE_ID_REAL_DE_TELEGRAM",
+      "file_unique_id": "AgADXXXXXXXXXXXX",
+      "file_size": 10240
+    }
+  }
+}
