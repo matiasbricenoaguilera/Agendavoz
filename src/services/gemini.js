@@ -17,20 +17,32 @@ function getClient() {
   return new OpenAI({ apiKey });
 }
 
-// ─── Contexto de fecha para el NLU ────────────────────────────────────────────
-const DATE_CONTEXT = `
-Contexto de fecha y hora (OBLIGATORIO para interpretar referencias relativas):
-- Hoy es domingo, 7 de junio de 2026.
-- Zona horaria: America/Santiago (UTC-4, horario de invierno en Chile).
-- Mañana         = lunes 8 de junio de 2026
-- Este lunes     = lunes 8 de junio de 2026
-- Este martes    = martes 9 de junio de 2026
-- Este miércoles = miércoles 10 de junio de 2026
-- Este jueves    = jueves 11 de junio de 2026
-- Este viernes   = viernes 12 de junio de 2026
-- Este sábado    = sábado 13 de junio de 2026
-- El próximo lunes (semana siguiente) = lunes 15 de junio de 2026
-`.trim();
+// ─── Contexto de fecha dinámico ───────────────────────────────────────────────
+const TIMEZONE    = 'America/Santiago';
+const LOCALE      = 'es-CL';
+const DAYS_ES     = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+const CHILE_OFFSET_MS = -4 * 60 * 60 * 1000; // UTC-4 (invierno)
+
+function buildDateContext() {
+  const now       = new Date(Date.now() + CHILE_OFFSET_MS);
+  const todayStr  = now.toLocaleDateString('sv-SE', { timeZone: TIMEZONE }); // YYYY-MM-DD
+  const dayName   = DAYS_ES[now.getUTCDay()];
+
+  // Generar los próximos 7 días con su nombre y fecha
+  const lines = [`Contexto de fecha y hora (OBLIGATORIO para interpretar referencias relativas):`];
+  lines.push(`- Hoy es ${dayName}, ${now.toLocaleDateString(LOCALE, { timeZone: TIMEZONE, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}.`);
+  lines.push(`- Zona horaria: America/Santiago (UTC-4).`);
+  lines.push(`- Si no se menciona fecha, usa HOY: ${todayStr}.`);
+
+  for (let i = 1; i <= 7; i++) {
+    const d    = new Date(now.getTime() + i * 24 * 60 * 60 * 1000);
+    const name = i === 1 ? 'Mañana' : `Este ${DAYS_ES[d.getUTCDay()]}`;
+    const date = d.toLocaleDateString('sv-SE', { timeZone: TIMEZONE });
+    lines.push(`- ${name} = ${date}`);
+  }
+
+  return lines.join('\n');
+}
 
 // ─── 1. Transcripción de voz a texto (Whisper) ────────────────────────────────
 
@@ -87,7 +99,7 @@ export async function extractEventDetails(transcription) {
   const systemPrompt = `
 Eres un asistente que extrae detalles de eventos de calendario a partir de texto en español.
 
-${DATE_CONTEXT}
+${buildDateContext()}
 
 Responde ÚNICAMENTE con un objeto JSON válido con esta estructura exacta:
 {
