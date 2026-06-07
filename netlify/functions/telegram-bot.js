@@ -44,9 +44,19 @@ function assertConfig() {
  */
 function getCalendarForUser(chatId) {
   const raw = process.env.USER_CALENDARS ?? '';
-  for (const entry of raw.split(',')) {
-    const [id, calendar] = entry.trim().split(':');
-    if (String(id) === String(chatId)) return calendar;
+  const entries = raw.split(',').map((e) => e.trim()).filter(Boolean);
+
+  logger.info('Buscando calendario para usuario', {
+    chatId: String(chatId),
+    entries,
+  });
+
+  for (const entry of entries) {
+    const colonIdx = entry.indexOf(':');
+    if (colonIdx === -1) continue;
+    const id       = entry.slice(0, colonIdx).trim();
+    const calendar = entry.slice(colonIdx + 1).trim();
+    if (id === String(chatId)) return calendar;
   }
   return null;
 }
