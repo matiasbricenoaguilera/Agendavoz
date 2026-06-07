@@ -32,7 +32,7 @@ const OK_RESPONSE = { statusCode: 200, body: 'OK' };
 
 const REQUIRED_VARS = [
   'TELEGRAM_BOT_TOKEN',
-  'GEMINI_API_KEY',
+  'OPENAI_API_KEY',
   'GOOGLE_SERVICE_ACCOUNT_JSON',
   'GOOGLE_CALENDAR_ID',
 ];

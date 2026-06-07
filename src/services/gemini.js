@@ -1,20 +1,23 @@
 /**
- * Servicio de Gemini AI — transcripción de audio (STT) y extracción de
- * detalles de eventos de calendario (NLU) en un solo módulo.
+ * Servicio de IA — transcripción de audio con OpenAI Whisper (STT)
+ * y extracción de detalles de eventos con GPT-4o-mini (NLU).
+ *
+ * Reemplaza la integración anterior con Google Gemini.
  */
 
-import { GoogleGenAI } from '@google/genai';
+import OpenAI, { toFile } from 'openai';
 import { logger } from '../utils/logger.js';
 
-const MODEL = 'gemini-2.0-flash';
+const MODEL_NLU = 'gpt-4o-mini';
+const MODEL_STT = 'whisper-1';
 
 function getClient() {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error('GEMINI_API_KEY no está configurado.');
-  return new GoogleGenAI({ apiKey });
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY no está configurado.');
+  return new OpenAI({ apiKey });
 }
 
-// ─── Contexto de fecha estático para que Gemini calcule días relativos ────────
+// ─── Contexto de fecha para el NLU ────────────────────────────────────────────
 const DATE_CONTEXT = `
 Contexto de fecha y hora (OBLIGATORIO para interpretar referencias relativas):
 - Hoy es domingo, 7 de junio de 2026.
@@ -27,42 +30,35 @@ Contexto de fecha y hora (OBLIGATORIO para interpretar referencias relativas):
 - Este viernes   = viernes 12 de junio de 2026
 - Este sábado    = sábado 13 de junio de 2026
 - El próximo lunes (semana siguiente) = lunes 15 de junio de 2026
-- La próxima semana comienza el lunes 15 de junio de 2026.
 `.trim();
 
-// ─── 1. Transcripción de voz a texto ──────────────────────────────────────────
+// ─── 1. Transcripción de voz a texto (Whisper) ────────────────────────────────
 
 /**
- * Transcribe un archivo de audio usando las capacidades multimodales de Gemini.
+ * Transcribe un Buffer de audio usando OpenAI Whisper.
  *
- * @param {Buffer} audioBuffer  - Buffer con los bytes del audio.
- * @param {string} mimeType     - MIME type del audio (e.g. 'audio/ogg').
- * @returns {Promise<string>}   - Texto transcrito en español.
+ * @param {Buffer} audioBuffer - Bytes del archivo de audio.
+ * @param {string} mimeType    - MIME type (e.g. 'audio/ogg').
+ * @returns {Promise<string>}  - Texto transcrito en español.
  */
 export async function transcribeAudio(audioBuffer, mimeType) {
-  const ai = getClient();
-  const base64Audio = audioBuffer.toString('base64');
+  const client = getClient();
 
-  logger.debug('Enviando audio a Gemini para transcripción', { mimeType, bytes: audioBuffer.length });
+  // Mapear MIME type a extensión para que Whisper identifique el formato
+  const ext = mimeType.includes('ogg') ? 'ogg'
+    : mimeType.includes('mpeg') || mimeType.includes('mp3') ? 'mp3'
+    : mimeType.includes('mp4') || mimeType.includes('m4a') ? 'm4a'
+    : mimeType.includes('wav') ? 'wav'
+    : 'ogg';
 
-  const response = await ai.models.generateContent({
-    model: MODEL,
-    contents: [
-      {
-        parts: [
-          {
-            inlineData: { mimeType, data: base64Audio },
-          },
-          {
-            text: [
-              'Transcribe exactamente lo que se dice en este audio.',
-              'El idioma es español (variante chilena o latinoamericana).',
-              'Responde ÚNICAMENTE con la transcripción literal, sin comentarios, sin puntuación extra.',
-            ].join(' '),
-          },
-        ],
-      },
-    ],
+  logger.debug('Enviando audio a Whisper para transcripción', { mimeType, bytes: audioBuffer.length });
+
+  const file = await toFile(audioBuffer, `audio.${ext}`, { type: mimeType });
+
+  const response = await client.audio.transcriptions.create({
+    model:    MODEL_STT,
+    file,
+    language: 'es',
   });
 
   const transcription = response.text?.trim() ?? '';
@@ -70,13 +66,12 @@ export async function transcribeAudio(audioBuffer, mimeType) {
   return transcription;
 }
 
-// ─── 2. Extracción de detalles del evento (NLU) ───────────────────────────────
+// ─── 2. Extracción de detalles del evento (GPT NLU) ───────────────────────────
 
 /**
- * Analiza el texto transcrito y extrae un objeto JSON con los detalles
- * necesarios para crear un evento en Google Calendar.
+ * Extrae detalles de un evento de calendario a partir de texto en español.
  *
- * @param {string} transcription - Texto en español con la petición del usuario.
+ * @param {string} transcription - Texto con la petición del usuario.
  * @returns {Promise<EventDetails>}
  *
  * @typedef {Object} EventDetails
@@ -87,61 +82,47 @@ export async function transcribeAudio(audioBuffer, mimeType) {
  * @property {string} [notes]    - Notas adicionales opcionales.
  */
 export async function extractEventDetails(transcription) {
-  const ai = getClient();
+  const client = getClient();
 
-  const prompt = `
+  const systemPrompt = `
+Eres un asistente que extrae detalles de eventos de calendario a partir de texto en español.
+
 ${DATE_CONTEXT}
 
-Analiza el siguiente texto en español y extrae los detalles del evento de calendario.
-
-Texto del usuario: "${transcription}"
-
-Responde ÚNICAMENTE con un objeto JSON válido. No uses markdown ni bloques de código.
-Usa exactamente esta estructura:
-
+Responde ÚNICAMENTE con un objeto JSON válido con esta estructura exacta:
 {
-  "intent": "agendar",
-  "summary": "Título claro y conciso del evento",
+  "intent": "agendar" | "cancelar" | "consultar" | "desconocido",
+  "summary": "Título claro y conciso del evento (máx 60 caracteres)",
   "start_time": "2026-06-08T15:00:00-04:00",
   "end_time": "2026-06-08T16:00:00-04:00",
-  "notes": "Notas opcionales del evento"
+  "notes": ""
 }
 
-Reglas de extracción:
-1. intent puede ser: "agendar", "cancelar", "consultar" o "desconocido".
-2. Si no se especifica hora de fin, asume exactamente 1 hora de duración.
-3. Si no se especifica fecha, usa mañana (lunes 8 de junio de 2026).
-4. Si no se especifica hora:
-   - Citas médicas, dentistas, médicos → 10:00
+Reglas:
+1. Si no se especifica hora de fin, asume exactamente 1 hora de duración.
+2. Si no se especifica fecha, usa mañana (lunes 8 de junio de 2026).
+3. Si no se especifica hora:
+   - Citas médicas, dentista → 10:00
    - Reuniones de trabajo → 09:00
    - Llamadas → 11:00
    - Actividades sociales o cenas → 19:00
    - Cualquier otro evento → 12:00
-5. Usa siempre formato ISO 8601 con offset de zona horaria -04:00.
-   Ejemplo correcto: "2026-06-09T14:30:00-04:00"
-6. summary debe ser un título corto y descriptivo (máx. 60 caracteres).
-7. Si el intent es "desconocido", igual llena summary con lo que se entiende.
-8. notes puede estar vacío ("") si no hay detalles adicionales.
+4. Usa siempre formato ISO 8601 con offset -04:00.
+5. No incluyas markdown, solo el JSON puro.
 `.trim();
 
-  const response = await ai.models.generateContent({
-    model: MODEL,
-    contents: [{ parts: [{ text: prompt }] }],
-    config: {
-      temperature:      0.1,
-      responseMimeType: 'application/json',
-    },
+  const response = await client.chat.completions.create({
+    model:           MODEL_NLU,
+    temperature:     0.1,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user',   content: `Texto del usuario: "${transcription}"` },
+    ],
   });
 
-  const rawText = response.text?.trim() ?? '{}';
-
-  // Limpia posibles bloques markdown que el modelo igualmente pueda añadir
-  const cleanedText = rawText
-    .replace(/^```(?:json)?\n?/, '')
-    .replace(/\n?```$/, '')
-    .trim();
-
-  const details = JSON.parse(cleanedText);
+  const rawText = response.choices[0]?.message?.content ?? '{}';
+  const details = JSON.parse(rawText);
   logger.info('Detalles del evento extraídos', { details });
   return details;
 }
