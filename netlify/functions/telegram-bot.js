@@ -102,17 +102,17 @@ async function handleVoiceMessage(message) {
   const fileData = message.voice ?? message.audio;
 
   await sendTypingAction(chatId);
-  await sendMessage(chatId, '🎙️ Recibí tu nota de voz\\. Procesando...');
+  await sendMessage(chatId, '🎙️ Recibí tu nota de voz. Procesando...');
 
   // ── Paso 1: Descargar el audio ──────────────────────────────────────────────
   const { buffer, mimeType } = await downloadFile(fileData.file_id);
 
   // ── Paso 2: Transcripción STT ───────────────────────────────────────────────
-  await sendMessage(chatId, '🧠 Transcribiendo con Gemini AI\\.\\.\\.');
+  await sendMessage(chatId, '🧠 Transcribiendo con Gemini AI...');
   const transcription = await transcribeAudio(buffer, mimeType);
 
   if (!transcription) {
-    await sendMessage(chatId, '⚠️ No pude escuchar el audio con claridad\\. ¿Puedes intentarlo de nuevo?');
+    await sendMessage(chatId, '⚠️ No pude escuchar el audio con claridad. ¿Puedes intentarlo de nuevo?');
     return;
   }
 
@@ -122,7 +122,7 @@ async function handleVoiceMessage(message) {
   if (!eventDetails || eventDetails.intent === 'desconocido') {
     await sendMessage(
       chatId,
-      `🤔 No pude identificar un evento claro\\.\n\nEsto fue lo que transcribí:\n_"${escapeMarkdown(transcription)}"_\n\nPrueba diciendo algo como: _"Agendar cita con el dentista mañana a las 3 de la tarde"_`,
+      `🤔 No pude identificar un evento claro.\n\nEsto fue lo que transcribí:\n<i>"${escapeHtml(transcription)}"</i>\n\nPrueba diciendo algo como: <i>"Agendar cita con el dentista mañana a las 3 de la tarde"</i>`,
     );
     return;
   }
@@ -130,7 +130,7 @@ async function handleVoiceMessage(message) {
   // ── Enrutar según intent ────────────────────────────────────────────────────
   switch (eventDetails.intent) {
     case 'agendar':
-      await handleScheduleIntent(chatId, eventDetails, transcription);
+      await handleScheduleIntent(chatId, eventDetails);
       break;
     case 'consultar':
       await handleQueryIntent(chatId);
@@ -138,25 +138,25 @@ async function handleVoiceMessage(message) {
     case 'cancelar':
       await sendMessage(
         chatId,
-        `📋 Entendí que quieres cancelar: *${escapeMarkdown(eventDetails.summary)}*\n\nLa cancelación automática estará disponible próximamente\\. Por ahora, cancela directamente desde [Google Calendar](https://calendar.google.com)\\.`,
+        `📋 Entendí que quieres cancelar: <b>${escapeHtml(eventDetails.summary)}</b>\n\nLa cancelación automática estará disponible próximamente. Por ahora cancela desde <a href="https://calendar.google.com">Google Calendar</a>.`,
       );
       break;
     default:
-      await sendMessage(chatId, '❓ No entendí la acción\\. ¿Quieres *agendar*, *consultar* o *cancelar* un evento?');
+      await sendMessage(chatId, '❓ No entendí la acción. ¿Quieres <b>agendar</b>, <b>consultar</b> o <b>cancelar</b> un evento?');
   }
 }
 
 // ─── Flujo: agendar evento ────────────────────────────────────────────────────
 
-async function handleScheduleIntent(chatId, eventDetails, transcription) {
+async function handleScheduleIntent(chatId, eventDetails) {
   const { summary, start_time, end_time } = eventDetails;
 
   await sendMessage(
     chatId,
-    `📋 *Entendí lo siguiente:*\n\n📌 *${escapeMarkdown(summary)}*\n` +
-    `🕐 Inicio: ${escapeMarkdown(formatDateTime(start_time))}\n` +
-    `🕑 Fin: ${escapeMarkdown(formatTimeOnly(end_time))}\n\n` +
-    `🔍 Verificando disponibilidad\\.\\.\\.`,
+    `📋 <b>Entendí lo siguiente:</b>\n\n📌 <b>${escapeHtml(summary)}</b>\n` +
+    `🕐 Inicio: ${escapeHtml(formatDateTime(start_time))}\n` +
+    `🕑 Fin: ${escapeHtml(formatTimeOnly(end_time))}\n\n` +
+    `🔍 Verificando disponibilidad...`,
   );
 
   const isFree = await checkAvailability(start_time, end_time);
@@ -171,28 +171,26 @@ async function handleScheduleIntent(chatId, eventDetails, transcription) {
 
     await sendMessage(
       chatId,
-      `✅ *¡Listo\\! Evento agendado:*\n\n` +
-      `📌 *${escapeMarkdown(summary)}*\n` +
-      `📅 ${escapeMarkdown(formatDateTime(start_time))}\n` +
-      `⏱ Hasta las ${escapeMarkdown(formatTimeOnly(end_time))}\n\n` +
-      `[👉 Ver en Google Calendar](${createdEvent.htmlLink})`,
+      `✅ <b>¡Listo! Evento agendado:</b>\n\n` +
+      `📌 <b>${escapeHtml(summary)}</b>\n` +
+      `📅 ${escapeHtml(formatDateTime(start_time))}\n` +
+      `⏱ Hasta las ${escapeHtml(formatTimeOnly(end_time))}\n\n` +
+      `<a href="${createdEvent.htmlLink}">👉 Ver en Google Calendar</a>`,
     );
   } else {
-    // Horario ocupado → buscar alternativas
     const freeSlots = await findNextFreeSlots(start_time, 2);
 
     let msg =
-      `⚠️ *Ese horario ya está ocupado:*\n` +
-      `🚫 ${escapeMarkdown(formatDateTime(start_time))} — ${escapeMarkdown(formatTimeOnly(end_time))}\n\n` +
-      `Te sugiero estos horarios disponibles para *${escapeMarkdown(summary)}*:\n`;
+      `⚠️ <b>Ese horario ya está ocupado:</b>\n` +
+      `🚫 ${escapeHtml(formatDateTime(start_time))} — ${escapeHtml(formatTimeOnly(end_time))}\n\n` +
+      `Te sugiero estos horarios disponibles para <b>${escapeHtml(summary)}</b>:\n`;
 
     freeSlots.forEach((slot, i) => {
       const emoji = i === 0 ? '1️⃣' : '2️⃣';
-      msg += `\n${emoji} ${escapeMarkdown(formatDateTime(slot.start))} — ${escapeMarkdown(formatTimeOnly(slot.end))}`;
+      msg += `\n${emoji} ${escapeHtml(formatDateTime(slot.start))} — ${escapeHtml(formatTimeOnly(slot.end))}`;
     });
 
-    msg += '\n\n¿Te acomoda alguno? Envíame otra nota de voz con tu elección\\. 🎙️';
-
+    msg += '\n\n¿Te acomoda alguno? Envíame otra nota de voz con tu elección. 🎙️';
     await sendMessage(chatId, msg);
   }
 }
@@ -202,8 +200,8 @@ async function handleScheduleIntent(chatId, eventDetails, transcription) {
 async function handleQueryIntent(chatId) {
   await sendMessage(
     chatId,
-    '🔍 La consulta de eventos estará disponible próximamente\\.\n' +
-    'Por ahora revisa tu [Google Calendar](https://calendar.google.com) directamente\\.',
+    '🔍 La consulta de eventos estará disponible próximamente.\n' +
+    'Por ahora revisa tu <a href="https://calendar.google.com">Google Calendar</a> directamente.',
   );
 }
 
@@ -216,30 +214,30 @@ async function handleTextMessage(message) {
   if (text === '/start' || text === '/help') {
     await sendMessage(
       chatId,
-      `👋 *¡Hola\\! Soy tu asistente de agenda por voz\\.* 🎙️\n\n` +
-      `Envíame una nota de voz y agendaré el evento automáticamente en tu Google Calendar\\.\n\n` +
-      `*Ejemplos de lo que puedes decir:*\n` +
-      `• _"Agendar cita con el médico mañana a las 10 de la mañana"_\n` +
-      `• _"Reunión con el equipo el martes a las 9"_\n` +
-      `• _"Cumpleaños de mamá el 15 de junio a las 7 de la tarde"_\n\n` +
-      `*Comandos disponibles:*\n` +
+      `👋 <b>¡Hola! Soy tu asistente de agenda por voz.</b> 🎙️\n\n` +
+      `Envíame una nota de voz y agendaré el evento automáticamente en tu Google Calendar.\n\n` +
+      `<b>Ejemplos de lo que puedes decir:</b>\n` +
+      `• <i>"Agendar cita con el médico mañana a las 10 de la mañana"</i>\n` +
+      `• <i>"Reunión con el equipo el martes a las 9"</i>\n` +
+      `• <i>"Cumpleaños de mamá el 15 de junio a las 7 de la tarde"</i>\n\n` +
+      `<b>Comandos:</b>\n` +
       `/start — Mostrar este mensaje\n` +
-      `/help  — Ayuda y ejemplos`,
+      `/help — Ayuda y ejemplos`,
     );
   } else {
     await sendMessage(
       chatId,
-      '🎙️ Para agendar un evento, *envíame una nota de voz*\\.\nEscribe /help para ver ejemplos\\.',
+      '🎙️ Para agendar un evento, <b>envíame una nota de voz</b>.\nEscribe /help para ver ejemplos.',
     );
   }
 }
 
 // ─── Utilidades ───────────────────────────────────────────────────────────────
 
-/**
- * Escapa caracteres reservados del modo MarkdownV2 de Telegram.
- * Telegram MarkdownV2 requiere escapar: . ! - ( ) [ ] { } + = | > # ~
- */
-function escapeMarkdown(text = '') {
-  return String(text).replace(/[_*[\]()~`>#+=|{}.!\\-]/g, (c) => `\\${c}`);
+/** Escapa caracteres especiales de HTML para el parse_mode HTML de Telegram. */
+function escapeHtml(text = '') {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
