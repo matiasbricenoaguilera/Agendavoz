@@ -1,14 +1,8 @@
 /**
  * Netlify Function: telegram-bot
  *
- * Webhook principal que recibe todas las actualizaciones del bot de Telegram.
- * Flujo para notas de voz:
- *   1. Descarga el audio de los servidores de Telegram.
- *   2. Transcribe con Gemini (STT multimodal).
- *   3. Extrae detalles del evento con Gemini (NLU → JSON).
- *   4. Verifica disponibilidad en Google Calendar.
- *   5a. Si está LIBRE  → crea el evento y confirma por Telegram.
- *   5b. Si está OCUPADO → busca 2 slots alternativos y los sugiere.
+ * Webhook multi-usuario: cada chat_id de Telegram se mapea a un Google Calendar
+ * distinto mediante la variable USER_CALENDARS (formato: "chatId1:cal1,chatId2:cal2").
  *
  * IMPORTANTE: La función siempre retorna statusCode 200 a Telegram para
  * evitar reintentos automáticos de entrega, incluso ante errores internos.
@@ -34,7 +28,7 @@ const REQUIRED_VARS = [
   'TELEGRAM_BOT_TOKEN',
   'OPENAI_API_KEY',
   'GOOGLE_SERVICE_ACCOUNT_JSON',
-  'GOOGLE_CALENDAR_ID',
+  'USER_CALENDARS',
 ];
 
 function assertConfig() {
@@ -42,6 +36,19 @@ function assertConfig() {
   if (missing.length > 0) {
     throw new Error(`Variables de entorno faltantes: ${missing.join(', ')}`);
   }
+}
+
+/**
+ * Retorna el calendarId asociado a un chatId según USER_CALENDARS.
+ * Formato de la variable: "chatId1:email1@gmail.com,chatId2:email2@gmail.com"
+ */
+function getCalendarForUser(chatId) {
+  const raw = process.env.USER_CALENDARS ?? '';
+  for (const entry of raw.split(',')) {
+    const [id, calendar] = entry.trim().split(':');
+    if (String(id) === String(chatId)) return calendar;
+  }
+  return null;
 }
 
 // ─── Handler principal ───────────────────────────────────────────────────────
@@ -70,15 +77,16 @@ export const handler = async (event) => {
 
     chatId = message.chat.id;
 
-    // Filtro de seguridad: solo responder al chat autorizado (si está configurado)
-    const ownerId = process.env.OWNER_CHAT_ID;
-    if (ownerId && String(chatId) !== String(ownerId)) {
-      logger.warn('Mensaje de chat no autorizado ignorado', { chatId });
+    // Verificar que el usuario está registrado en USER_CALENDARS
+    const calendarId = getCalendarForUser(chatId);
+    if (!calendarId) {
+      logger.warn('Usuario no registrado en USER_CALENDARS', { chatId });
+      await sendMessage(chatId, '⛔ No tienes acceso a este bot. Contacta al administrador.').catch(() => {});
       return OK_RESPONSE;
     }
 
     if (message.voice || message.audio) {
-      await handleVoiceMessage(message);
+      await handleVoiceMessage(message, calendarId);
     } else if (message.text) {
       await handleTextMessage(message);
     }
@@ -97,7 +105,7 @@ export const handler = async (event) => {
 
 // ─── Manejador de mensajes de voz / audio ────────────────────────────────────
 
-async function handleVoiceMessage(message) {
+async function handleVoiceMessage(message, calendarId) {
   const chatId   = message.chat.id;
   const fileData = message.voice ?? message.audio;
 
@@ -130,7 +138,7 @@ async function handleVoiceMessage(message) {
   // ── Enrutar según intent ────────────────────────────────────────────────────
   switch (eventDetails.intent) {
     case 'agendar':
-      await handleScheduleIntent(chatId, eventDetails);
+      await handleScheduleIntent(chatId, eventDetails, calendarId);
       break;
     case 'consultar':
       await handleQueryIntent(chatId);
@@ -148,7 +156,7 @@ async function handleVoiceMessage(message) {
 
 // ─── Flujo: agendar evento ────────────────────────────────────────────────────
 
-async function handleScheduleIntent(chatId, eventDetails) {
+async function handleScheduleIntent(chatId, eventDetails, calendarId) {
   const { summary, start_time, end_time } = eventDetails;
 
   await sendMessage(
@@ -159,14 +167,15 @@ async function handleScheduleIntent(chatId, eventDetails) {
     `🔍 Verificando disponibilidad...`,
   );
 
-  const isFree = await checkAvailability(start_time, end_time);
+  const isFree = await checkAvailability(start_time, end_time, calendarId);
 
   if (isFree) {
     const createdEvent = await createCalendarEvent({
       summary,
       start_time,
       end_time,
-      notes: eventDetails.notes ?? '',
+      notes:      eventDetails.notes ?? '',
+      calendarId,
     });
 
     await sendMessage(
@@ -178,7 +187,7 @@ async function handleScheduleIntent(chatId, eventDetails) {
       `<a href="${createdEvent.htmlLink}">👉 Ver en Google Calendar</a>`,
     );
   } else {
-    const freeSlots = await findNextFreeSlots(start_time, 2);
+    const freeSlots = await findNextFreeSlots(start_time, 2, calendarId);
 
     let msg =
       `⚠️ <b>Ese horario ya está ocupado:</b>\n` +

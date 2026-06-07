@@ -9,7 +9,6 @@ import { logger } from '../utils/logger.js';
 import { getChileDateString } from '../utils/dateUtils.js';
 
 const TIMEZONE          = 'America/Santiago';
-const CALENDAR_ID       = () => process.env.GOOGLE_CALENDAR_ID ?? (() => { throw new Error('GOOGLE_CALENDAR_ID no está configurado.'); })();
 const EVENT_DURATION_MS = 60 * 60 * 1000;     // 1 hora
 const WORKDAY_START_H   = 8;                   // 08:00 Chile
 const WORKDAY_END_H     = 20;                  // 20:00 Chile
@@ -56,13 +55,14 @@ function roundUpToNextHour(date) {
 /**
  * Verifica si el bloque [startTime, endTime] está libre en el calendario.
  *
+ * @param {string} calendarId - ID del calendario a consultar.
  * @returns {Promise<boolean>} true si no hay eventos que se solapen.
  */
-export async function checkAvailability(startTime, endTime) {
+export async function checkAvailability(startTime, endTime, calendarId) {
   const calendar = getCalendarClient();
 
   const response = await calendar.events.list({
-    calendarId:  CALENDAR_ID(),
+    calendarId,
     timeMin:     startTime,
     timeMax:     endTime,
     singleEvents: true,
@@ -76,12 +76,12 @@ export async function checkAvailability(startTime, endTime) {
 }
 
 /**
- * Crea un evento en el calendario de la cuenta de servicio.
+ * Crea un evento en el calendario indicado.
  *
- * @param {{ summary, start_time, end_time, notes }} eventData
+ * @param {{ summary, start_time, end_time, notes, calendarId }} eventData
  * @returns {Promise<Object>} Objeto del evento creado por Google Calendar.
  */
-export async function createCalendarEvent({ summary, start_time, end_time, notes = '' }) {
+export async function createCalendarEvent({ summary, start_time, end_time, notes = '', calendarId }) {
   const calendar = getCalendarClient();
 
   const event = {
@@ -92,7 +92,7 @@ export async function createCalendarEvent({ summary, start_time, end_time, notes
   };
 
   const response = await calendar.events.insert({
-    calendarId:  CALENDAR_ID(),
+    calendarId,
     requestBody: event,
   });
 
@@ -101,15 +101,14 @@ export async function createCalendarEvent({ summary, start_time, end_time, notes
 }
 
 /**
- * Busca los próximos N bloques libres de 1 hora a partir de referenceStartTime,
- * buscando primero en el mismo día laboral (08:00–20:00 Chile) y luego en el
- * siguiente día si no hay suficientes slots disponibles.
+ * Busca los próximos N bloques libres de 1 hora a partir de referenceStartTime.
  *
  * @param {string} referenceStartTime - ISO string del momento de referencia.
  * @param {number} count              - Cantidad de slots libres a retornar.
+ * @param {string} calendarId         - ID del calendario a consultar.
  * @returns {Promise<Array<{start: string, end: string}>>}
  */
-export async function findNextFreeSlots(referenceStartTime, count = 2) {
+export async function findNextFreeSlots(referenceStartTime, count = 2, calendarId) {
   const calendar = getCalendarClient();
   const refDate  = new Date(referenceStartTime);
 
@@ -122,11 +121,11 @@ export async function findNextFreeSlots(referenceStartTime, count = 2) {
 
   // No buscar más allá del horario laboral de hoy
   if (cursor >= dayEnd) {
-    return findSlotsNextDay(calendar, refDate, count);
+    return findSlotsNextDay(calendar, refDate, count, calendarId);
   }
 
   const response = await calendar.events.list({
-    calendarId:   CALENDAR_ID(),
+    calendarId,
     timeMin:      cursor.toISOString(),
     timeMax:      dayEnd.toISOString(),
     singleEvents: true,
@@ -163,7 +162,7 @@ export async function findNextFreeSlots(referenceStartTime, count = 2) {
 
   // Si no hubo suficientes hoy, completamos con el día siguiente
   if (freeSlots.length < count) {
-    const nextDaySlots = await findSlotsNextDay(calendar, refDate, count - freeSlots.length);
+    const nextDaySlots = await findSlotsNextDay(calendar, refDate, count - freeSlots.length, calendarId);
     freeSlots.push(...nextDaySlots);
   }
 
@@ -180,13 +179,13 @@ function buildSlot(cursorDate) {
   };
 }
 
-async function findSlotsNextDay(calendar, refDate, count) {
+async function findSlotsNextDay(calendar, refDate, count, calendarId) {
   const tomorrow = new Date(refDate.getTime() + 24 * 60 * 60 * 1000);
   const startISO = makeChileISO(tomorrow, 9);  // 09:00 del día siguiente
   const endISO   = makeChileISO(tomorrow, WORKDAY_END_H);
 
   const response = await calendar.events.list({
-    calendarId:   CALENDAR_ID(),
+    calendarId,
     timeMin:      startISO,
     timeMax:      endISO,
     singleEvents: true,
