@@ -107,20 +107,24 @@ Responde ÚNICAMENTE con un objeto JSON válido con esta estructura exacta:
   "summary": "Título claro y conciso del evento (máx 60 caracteres)",
   "start_time": "2026-06-08T15:00:00-04:00",
   "end_time": "2026-06-08T16:00:00-04:00",
-  "notes": ""
+  "notes": "",
+  "date_specified": true,
+  "time_specified": true
 }
 
 Reglas:
 1. Si no se especifica hora de fin, asume exactamente 1 hora de duración.
-2. Si no se especifica fecha, usa mañana (lunes 8 de junio de 2026).
-3. Si no se especifica hora:
+2. Si no se menciona explícitamente un día o fecha, usa hoy y marca "date_specified": false.
+3. Si no se menciona explícitamente una hora, usa el valor por defecto y marca "time_specified": false:
    - Citas médicas, dentista → 10:00
    - Reuniones de trabajo → 09:00
    - Llamadas → 11:00
    - Actividades sociales o cenas → 19:00
    - Cualquier otro evento → 12:00
-4. Usa siempre formato ISO 8601 con offset -04:00.
-5. No incluyas markdown, solo el JSON puro.
+4. Si el usuario SÍ dijo un día ("mañana", "el martes", "el 15") marca "date_specified": true.
+5. Si el usuario SÍ dijo una hora ("a las 3", "a las 15:00") marca "time_specified": true.
+6. Usa siempre formato ISO 8601 con offset -04:00.
+7. No incluyas markdown, solo el JSON puro.
 `.trim();
 
   const response = await client.chat.completions.create({

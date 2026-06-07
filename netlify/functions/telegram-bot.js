@@ -145,6 +145,42 @@ async function handleVoiceMessage(message, calendarId) {
     return;
   }
 
+  // ── Verificar si faltan datos antes de agendar ─────────────────────────────
+  if (eventDetails.intent === 'agendar') {
+    const missingDate = eventDetails.date_specified === false;
+    const missingTime = eventDetails.time_specified === false;
+
+    if (missingDate && missingTime) {
+      await sendMessage(chatId,
+        `📋 Entendí que quieres agendar: <b>${escapeHtml(eventDetails.summary)}</b>\n\n` +
+        `⚠️ No mencionaste el <b>día ni la hora</b>.\n\n` +
+        `Envíame otro mensaje de voz indicando cuándo, por ejemplo:\n` +
+        `<i>"El martes a las 3 de la tarde"</i> 🎙️`
+      );
+      return;
+    }
+
+    if (missingDate) {
+      await sendMessage(chatId,
+        `📋 Entendí que quieres agendar: <b>${escapeHtml(eventDetails.summary)}</b> a las <b>${escapeHtml(formatTimeOnly(eventDetails.start_time))}</b>\n\n` +
+        `⚠️ No mencionaste el <b>día</b>.\n\n` +
+        `Envíame otro mensaje de voz con la fecha, por ejemplo:\n` +
+        `<i>"El martes"</i> o <i>"El 15 de junio"</i> 🎙️`
+      );
+      return;
+    }
+
+    if (missingTime) {
+      await sendMessage(chatId,
+        `📋 Entendí que quieres agendar: <b>${escapeHtml(eventDetails.summary)}</b> el <b>${escapeHtml(formatDateTime(eventDetails.start_time))}</b>\n\n` +
+        `⚠️ No mencionaste la <b>hora</b>.\n\n` +
+        `Envíame otro mensaje de voz con la hora, por ejemplo:\n` +
+        `<i>"A las 3 de la tarde"</i> o <i>"A las 10 de la mañana"</i> 🎙️`
+      );
+      return;
+    }
+  }
+
   // ── Enrutar según intent ────────────────────────────────────────────────────
   switch (eventDetails.intent) {
     case 'agendar':
