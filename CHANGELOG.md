@@ -5,6 +5,65 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [2.0.0] — 2026-06-08
+
+### Añadido (Supabase + Conversación fluida)
+
+- **Supabase** integrado como backend de estado persistente.
+  - `supabase/schema.sql` — Esquema con tablas `conversations` y `event_log`.
+  - `src/services/supabase.js` — Operaciones de DB: `getConversation`, `saveConversation`, `clearConversation`, `logEvent`.
+  - Las conversaciones expiran automáticamente tras 30 minutos de inactividad.
+
+- **Máquina de estados conversacional** en `telegram-bot.js`:
+  - `AWAITING_DATE` — El bot guarda el resumen y la hora; pide el día.
+  - `AWAITING_TIME` — El bot guarda el resumen y el día; pide la hora.
+  - `AWAITING_DATETIME` — Faltan ambos; el bot guarda el resumen y pregunta.
+  - `AWAITING_CONFIRMATION` — Evento completo; el bot pide "sí" o "no" antes de agendar.
+  - `AWAITING_SLOT_CHOICE` — Horario ocupado; el bot ofrece 2 alternativas + opción de sobreescribir.
+  - `AWAITING_CANCEL_CONFIRM` — Evento encontrado para cancelar; el bot pide confirmación.
+
+- **Confirmación antes de agendar** (`askForConfirmation`): Muestra resumen, fecha y hora del evento y espera la aprobación del usuario antes de crear nada.
+
+- **Consultar eventos del día** (`processConsultarIntent`): Listar la agenda de un día concreto mediante nota de voz ("¿Qué tengo mañana?").
+
+- **Cancelar eventos por voz** (`processCancelarIntent`): Busca el evento por descripción y fecha, muestra detalles y pide confirmación antes de eliminar.
+
+- **Sobreescribir eventos** (`overwriteEvent`): Cuando un horario está ocupado, el usuario puede elegir reemplazar el evento existente.
+
+- **Historial de eventos** (`event_log` en Supabase): Registra cada `created`, `cancelled` y `overwritten` con transcripción original para auditoría.
+
+- **`netlify/functions/daily-summary.js`** — Función programada (cron):
+  - Envía automáticamente el resumen del día a todos los usuarios registrados.
+  - Se ejecuta de lunes a viernes a las 08:00 hora Chile (12:00 UTC).
+  - Configurada en `netlify.toml` con `schedule = "0 12 * * 1-5"`.
+
+- **Nuevas funciones en `src/services/calendar.js`**:
+  - `listEvents(startTime, endTime, calendarId, query)` — Lista eventos con filtro opcional.
+  - `getBusyEvent(startTime, endTime, calendarId)` — Retorna el evento que bloquea un horario.
+  - `deleteCalendarEvent(eventId, calendarId)` — Elimina un evento.
+
+- **`detectSimpleIntent(text)`** en `gemini.js` — Detecta respuestas simples del usuario (sí/no/1/2/reemplazar) sin consumir tokens de GPT.
+
+- **Nuevas utilidades en `dateUtils.js`**:
+  - `formatDateLong` — Formato "lunes 8 de junio".
+  - `extractDateFromISO` / `extractTimeFromISO` — Parsing de partes de un ISO string.
+  - `buildChileISO` — Construye ISO string Chile desde fecha y hora separados.
+  - `addMsToChileISO` — Suma milisegundos a un ISO string manteniendo offset Chile.
+
+- **Comando `/hoy`** — Muestra la agenda del día directamente desde texto.
+
+### Cambiado
+
+- `telegram-bot.js` completamente refactorizado para usar la máquina de estados de Supabase en lugar del procesamiento lineal anterior.
+- `REQUIRED_VARS` extendido con `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`.
+- Los errores de Supabase se registran en logs pero no interrumpen el flujo principal.
+
+### Dependencias
+
+- `@supabase/supabase-js` ^2.49.4 añadida a `dependencies`.
+
+---
+
 ## [1.0.0] — 2026-06-07
 
 ### Añadido

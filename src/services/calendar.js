@@ -53,6 +53,77 @@ function roundUpToNextHour(date) {
 // ─── API pública ──────────────────────────────────────────────────────────────
 
 /**
+ * Lista los eventos en un rango de tiempo dado.
+ * Opcionalmente acepta una cadena de búsqueda para filtrar por título.
+ *
+ * @param {string} startTime  - ISO string del inicio del rango.
+ * @param {string} endTime    - ISO string del fin del rango.
+ * @param {string} calendarId - ID del calendario.
+ * @param {string} [query]    - Texto de búsqueda opcional.
+ * @returns {Promise<Array>}  - Array de eventos de Google Calendar.
+ */
+export async function listEvents(startTime, endTime, calendarId, query = '') {
+  const calendar = getCalendarClient();
+
+  const params = {
+    calendarId,
+    timeMin:      startTime,
+    timeMax:      endTime,
+    singleEvents: true,
+    orderBy:      'startTime',
+  };
+  if (query) params.q = query;
+
+  const response = await calendar.events.list(params);
+  const items = response.data.items ?? [];
+  logger.info('Eventos listados', { cantidad: items.length, startTime, endTime });
+  return items;
+}
+
+/**
+ * Retorna el primer evento que se solapa con el bloque [startTime, endTime].
+ * Útil para identificar qué evento bloquea un horario.
+ *
+ * @param {string} startTime
+ * @param {string} endTime
+ * @param {string} calendarId
+ * @returns {Promise<{id, summary, start, end}|null>}
+ */
+export async function getBusyEvent(startTime, endTime, calendarId) {
+  const calendar = getCalendarClient();
+
+  const response = await calendar.events.list({
+    calendarId,
+    timeMin:      startTime,
+    timeMax:      endTime,
+    singleEvents: true,
+    orderBy:      'startTime',
+  });
+
+  const first = (response.data.items ?? [])[0];
+  if (!first) return null;
+
+  return {
+    id:      first.id,
+    summary: first.summary ?? 'Evento sin título',
+    start:   first.start.dateTime ?? first.start.date,
+    end:     first.end.dateTime   ?? first.end.date,
+  };
+}
+
+/**
+ * Elimina un evento del calendario por su ID.
+ *
+ * @param {string} eventId    - ID del evento en Google Calendar.
+ * @param {string} calendarId - ID del calendario.
+ */
+export async function deleteCalendarEvent(eventId, calendarId) {
+  const calendar = getCalendarClient();
+  await calendar.events.delete({ calendarId, eventId });
+  logger.info('Evento eliminado de Google Calendar', { eventId });
+}
+
+/**
  * Verifica si el bloque [startTime, endTime] está libre en el calendario.
  *
  * @param {string} calendarId - ID del calendario a consultar.

@@ -64,3 +64,50 @@ export function addHoursToISO(isoString, hours) {
   const date = new Date(isoString);
   return new Date(date.getTime() + hours * 3600 * 1000).toISOString();
 }
+
+/**
+ * Formatea solo la fecha (sin hora) en español legible:
+ * "lunes 8 de junio"
+ */
+export function formatDateLong(isoString) {
+  const date = new Date(isoString);
+  return date.toLocaleDateString(LOCALE, {
+    timeZone: TIMEZONE,
+    weekday: 'long',
+    day:     'numeric',
+    month:   'long',
+  });
+}
+
+/**
+ * Extrae solo la parte de fecha "YYYY-MM-DD" de un ISO string.
+ */
+export function extractDateFromISO(isoString) {
+  return isoString.split('T')[0];
+}
+
+/**
+ * Extrae solo la parte de hora "HH:MM" de un ISO string.
+ */
+export function extractTimeFromISO(isoString) {
+  return isoString.split('T')[1]?.slice(0, 5) ?? '12:00';
+}
+
+/**
+ * Construye un ISO string para Chile (-04:00) combinando una fecha y una hora.
+ *
+ * @param {string} dateStr - "YYYY-MM-DD"
+ * @param {string} timeStr - "HH:MM"
+ * @returns {string}       - "YYYY-MM-DDTHH:MM:00-04:00"
+ */
+export function buildChileISO(dateStr, timeStr) {
+  return `${dateStr}T${timeStr}:00-04:00`;
+}
+
+/**
+ * Retorna un ISO string con offset Chile (-04:00) sumando milisegundos a otro ISO.
+ */
+export function addMsToChileISO(isoString, ms) {
+  const newDate = new Date(new Date(isoString).getTime() + ms);
+  return toChileISO(newDate);
+}

@@ -12,9 +12,13 @@
   directory = "netlify/functions"
 
 # Timeout máximo para funciones síncronas en Netlify (26 segundos)
-# Para tiempos de procesamiento mayores considera migrar a Background Functions
 [functions."telegram-bot"]
   timeout = 26
+
+# Resumen diario: lunes a viernes a las 08:00 hora Chile (12:00 UTC con UTC-4)
+[functions."daily-summary"]
+  timeout = 30
+  schedule = "0 12 * * 1-5"
 
 [[redirects]]
   from   = "/api/*"

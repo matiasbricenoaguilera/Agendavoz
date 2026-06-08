@@ -15,6 +15,7 @@
     "logs": "netlify functions:log telegram-bot"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.108.0",
     "axios": "^1.7.9",
     "dotenv": "^16.4.7",
     "googleapis": "^144.0.0",
