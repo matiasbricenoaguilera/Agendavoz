@@ -80,6 +80,59 @@ export async function clearConversation(telegramId) {
   logger.info('Estado de conversación eliminado', { telegramId });
 }
 
+// ─── Recordatorios (deduplicación) ───────────────────────────────────────────
+
+/**
+ * Comprueba si ya se envió el recordatorio de un evento para un usuario hoy.
+ *
+ * @param {string|number} telegramId
+ * @param {string}        googleEventId
+ * @param {string}        eventDate - "YYYY-MM-DD" del día del evento
+ * @returns {Promise<boolean>}
+ */
+export async function hasReminderBeenSent(telegramId, googleEventId, eventDate) {
+  const sb = getClient();
+  const { data } = await sb
+    .from('reminders')
+    .select('id')
+    .eq('telegram_id', String(telegramId))
+    .eq('google_event_id', googleEventId)
+    .eq('event_date', eventDate)
+    .maybeSingle();
+  return !!data;
+}
+
+/**
+ * Registra que se envió el recordatorio para un evento.
+ *
+ * @param {string|number} telegramId
+ * @param {string}        googleEventId
+ * @param {string}        eventDate - "YYYY-MM-DD"
+ */
+export async function markReminderSent(telegramId, googleEventId, eventDate) {
+  const sb = getClient();
+  const { error } = await sb.from('reminders').upsert(
+    {
+      telegram_id:     String(telegramId),
+      google_event_id: googleEventId,
+      event_date:      eventDate,
+      sent_at:         new Date().toISOString(),
+    },
+    { onConflict: 'telegram_id,google_event_id,event_date' },
+  );
+  if (error) logger.error('Error registrando recordatorio', { error: error.message });
+  else logger.info('Recordatorio registrado en DB', { telegramId, googleEventId });
+}
+
+/**
+ * Elimina recordatorios con más de 30 días para mantener la tabla limpia.
+ */
+export async function cleanOldReminders() {
+  const sb = getClient();
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  await sb.from('reminders').delete().lt('sent_at', cutoff);
+}
+
 // ─── Historial de eventos ─────────────────────────────────────────────────────
 
 /**

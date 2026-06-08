@@ -124,6 +124,26 @@ export async function deleteCalendarEvent(eventId, calendarId) {
 }
 
 /**
+ * Actualiza parcialmente un evento existente (PATCH).
+ * Solo se aplican los campos presentes en `updates`.
+ *
+ * @param {string} eventId    - ID del evento a modificar.
+ * @param {string} calendarId - ID del calendario.
+ * @param {object} updates    - Campos a actualizar (e.g. { start, end, description }).
+ * @returns {Promise<Object>} - Evento actualizado devuelto por Google Calendar.
+ */
+export async function updateCalendarEvent(eventId, calendarId, updates) {
+  const calendar = getCalendarClient();
+  const response = await calendar.events.patch({
+    calendarId,
+    eventId,
+    requestBody: updates,
+  });
+  logger.info('Evento actualizado en Google Calendar', { eventId, updates });
+  return response.data;
+}
+
+/**
  * Verifica si el bloque [startTime, endTime] está libre en el calendario.
  *
  * @param {string} calendarId - ID del calendario a consultar.

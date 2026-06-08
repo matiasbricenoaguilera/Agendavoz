@@ -21,13 +21,13 @@ import { sendMessage, sendTypingAction, downloadFile }            from '../../sr
 import { transcribeAudio, extractEventDetails, detectSimpleIntent } from '../../src/services/gemini.js';
 import {
   checkAvailability, createCalendarEvent, findNextFreeSlots,
-  listEvents, getBusyEvent, deleteCalendarEvent,
+  listEvents, getBusyEvent, deleteCalendarEvent, updateCalendarEvent,
 }                                                                  from '../../src/services/calendar.js';
 import { getConversation, saveConversation, clearConversation, logEvent } from '../../src/services/supabase.js';
 import {
   formatDateTime, formatDateLong, formatTimeOnly,
   extractDateFromISO, extractTimeFromISO, buildChileISO, addMsToChileISO,
-  getChileDateString,
+  getChileDateString, toChileISO,
 }                                                                  from '../../src/utils/dateUtils.js';
 import { logger }                                                  from '../../src/utils/logger.js';
 
@@ -375,6 +375,75 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
       break;
     }
 
+    // ── Esperando confirmación para mover evento ────────────────────────────
+    case 'AWAITING_MOVE_CONFIRM': {
+      const intent = detectSimpleIntent(textContent);
+
+      if (intent === 'yes') {
+        await clearConversation(chatId);
+        const { event_id, event_summary, new_start_time, new_end_time } = context;
+        const updated = await updateCalendarEvent(event_id, calendarId, {
+          start: { dateTime: new_start_time, timeZone: 'America/Santiago' },
+          end:   { dateTime: new_end_time,   timeZone: 'America/Santiago' },
+        });
+        await logEvent(chatId, calendarId, {
+          id:         event_id,
+          summary:    event_summary,
+          start_time: new_start_time,
+          end_time:   new_end_time,
+          transcription: context.transcription ?? '',
+          action:     'moved',
+        });
+        await sendMessage(chatId,
+          `✅ <b>Evento movido:</b>\n\n` +
+          `📌 <b>${escapeHtml(event_summary)}</b>\n` +
+          `📅 ${escapeHtml(formatDateTime(new_start_time))}\n` +
+          `⏱ Hasta las ${escapeHtml(formatTimeOnly(new_end_time))}\n\n` +
+          `<a href="${updated.htmlLink}">👉 Ver en Google Calendar</a>`,
+        );
+      } else if (intent === 'no') {
+        await clearConversation(chatId);
+        await sendMessage(chatId, '↩️ Cancelado. El evento no fue modificado.');
+      } else {
+        await sendMessage(chatId, '🤔 Responde <b>"sí"</b> para confirmar el cambio o <b>"no"</b> para cancelar. 🎙️');
+      }
+      break;
+    }
+
+    // ── Esperando confirmación para agregar nota ─────────────────────────────
+    case 'AWAITING_NOTE_CONFIRM': {
+      const intent = detectSimpleIntent(textContent);
+
+      if (intent === 'yes') {
+        await clearConversation(chatId);
+        const { event_id, event_summary, event_start, notes, existing_description } = context;
+        const newDescription = existing_description
+          ? `${existing_description}\n\n${notes}`
+          : notes;
+
+        await updateCalendarEvent(event_id, calendarId, { description: newDescription });
+        await logEvent(chatId, calendarId, {
+          id:         event_id,
+          summary:    event_summary,
+          start_time: event_start,
+          transcription: notes,
+          action:     'noted',
+        });
+        await sendMessage(chatId,
+          `📝 <b>Nota agregada al evento:</b>\n\n` +
+          `📌 <b>${escapeHtml(event_summary)}</b>\n` +
+          `📅 ${escapeHtml(formatDateTime(event_start))}\n\n` +
+          `<i>"${escapeHtml(notes)}"</i>`,
+        );
+      } else if (intent === 'no') {
+        await clearConversation(chatId);
+        await sendMessage(chatId, '↩️ Cancelado. El evento no fue modificado.');
+      } else {
+        await sendMessage(chatId, '🤔 Responde <b>"sí"</b> para agregar la nota o <b>"no"</b> para cancelar. 🎙️');
+      }
+      break;
+    }
+
     default:
       await clearConversation(chatId);
       await sendMessage(chatId, '↩️ Se reinició la conversación. ¿En qué puedo ayudarte?');
@@ -397,11 +466,20 @@ async function processVoiceIntent(chatId, transcription, calendarId) {
   }
 
   switch (eventDetails.intent) {
-    case 'agendar':  await processAgendarIntent(chatId, eventDetails, transcription, calendarId); break;
+    case 'agendar':   await processAgendarIntent(chatId, eventDetails, transcription, calendarId); break;
     case 'consultar': await processConsultarIntent(chatId, eventDetails, calendarId); break;
     case 'cancelar':  await processCancelarIntent(chatId, eventDetails, calendarId); break;
+    case 'mover':     await processMoverIntent(chatId, eventDetails, transcription, calendarId); break;
+    case 'anotar':    await processAnotarIntent(chatId, eventDetails, calendarId); break;
     default:
-      await sendMessage(chatId, '❓ No entendí la acción. Puedes <b>agendar</b>, <b>consultar</b> o <b>cancelar</b> un evento.');
+      await sendMessage(chatId,
+        '❓ No entendí la acción. Puedes:\n' +
+        '• <b>agendar</b> — crear un evento\n' +
+        '• <b>consultar</b> — ver tu agenda\n' +
+        '• <b>cancelar</b> — eliminar un evento\n' +
+        '• <b>mover</b> — cambiar horario de un evento\n' +
+        '• <b>agregar nota</b> — añadir descripción a un evento',
+      );
   }
 }
 
@@ -684,6 +762,111 @@ async function processCancelarIntent(chatId, eventDetails, calendarId) {
   );
 }
 
+// ─── Flujo: mover evento ──────────────────────────────────────────────────────
+
+async function processMoverIntent(chatId, eventDetails, transcription, calendarId) {
+  const { summary, start_time, new_start_time, new_end_time, date_specified, time_specified } = eventDetails;
+
+  // Verificar que tengamos el nuevo horario
+  if (!new_start_time) {
+    await sendMessage(chatId,
+      `📋 Entendí que quieres mover: <b>${escapeHtml(summary)}</b>\n\n` +
+      `⚠️ No mencionaste el nuevo horario.\n\n` +
+      `Dime cuándo quieres reprogramarlo:\n` +
+      `<i>"Muévelo al miércoles a las 4 de la tarde"</i> 🎙️`,
+    );
+    return;
+  }
+
+  // Verificar que tengamos la fecha/hora del evento original para buscarlo
+  const refDate  = new Date(start_time);
+  const dateStr  = getChileDateString(refDate);
+  const dayStart = `${dateStr}T00:00:00${CHILE_UTC_OFFSET}`;
+  const dayEnd   = `${dateStr}T23:59:59${CHILE_UTC_OFFSET}`;
+
+  const events = await listEvents(dayStart, dayEnd, calendarId, summary);
+
+  if (events.length === 0) {
+    await sendMessage(chatId,
+      `🔍 No encontré <i>"${escapeHtml(summary)}"</i> en ${formatDateLong(start_time)}.\n\n` +
+      `Intenta describiendo mejor el evento o con otra fecha. 🎙️`,
+    );
+    return;
+  }
+
+  const target    = events[0];
+  const computedEnd = new_end_time ?? addMsToChileISO(
+    new_start_time,
+    new Date(target.end.dateTime ?? target.end.date) - new Date(target.start.dateTime ?? target.start.date),
+  );
+
+  await saveConversation(chatId, 'AWAITING_MOVE_CONFIRM', {
+    event_id:       target.id,
+    event_summary:  target.summary ?? summary,
+    original_start: target.start.dateTime ?? target.start.date,
+    original_end:   target.end.dateTime   ?? target.end.date,
+    new_start_time,
+    new_end_time:   computedEnd,
+    transcription,
+  });
+
+  await sendMessage(chatId,
+    `🔄 <b>¿Confirmas este cambio de horario?</b>\n\n` +
+    `📌 <b>${escapeHtml(target.summary ?? summary)}</b>\n\n` +
+    `🗓 <b>Antes:</b> ${escapeHtml(formatDateTime(target.start.dateTime ?? target.start.date))}\n` +
+    `🗓 <b>Después:</b> ${escapeHtml(formatDateTime(new_start_time))} — ${escapeHtml(formatTimeOnly(computedEnd))}\n\n` +
+    `Responde <b>"sí"</b> para mover o <b>"no"</b> para cancelar 🎙️`,
+  );
+}
+
+// ─── Flujo: agregar nota a evento ─────────────────────────────────────────────
+
+async function processAnotarIntent(chatId, eventDetails, calendarId) {
+  const { summary, start_time, notes } = eventDetails;
+
+  if (!notes || notes.trim() === '') {
+    await sendMessage(chatId,
+      `📋 Entendí que quieres agregar una nota al evento: <b>${escapeHtml(summary)}</b>\n\n` +
+      `⚠️ No entendí qué nota quieres agregar. Intenta de nuevo:\n` +
+      `<i>"Agrega al evento del martes: llevar documentos firmados"</i> 🎙️`,
+    );
+    return;
+  }
+
+  const refDate  = new Date(start_time);
+  const dateStr  = getChileDateString(refDate);
+  const dayStart = `${dateStr}T00:00:00${CHILE_UTC_OFFSET}`;
+  const dayEnd   = `${dateStr}T23:59:59${CHILE_UTC_OFFSET}`;
+
+  const events = await listEvents(dayStart, dayEnd, calendarId, summary);
+
+  if (events.length === 0) {
+    await sendMessage(chatId,
+      `🔍 No encontré <i>"${escapeHtml(summary)}"</i> en ${formatDateLong(start_time)}.\n\n` +
+      `Intenta con otra descripción o fecha. 🎙️`,
+    );
+    return;
+  }
+
+  const target = events[0];
+
+  await saveConversation(chatId, 'AWAITING_NOTE_CONFIRM', {
+    event_id:            target.id,
+    event_summary:       target.summary ?? summary,
+    event_start:         target.start.dateTime ?? target.start.date,
+    notes,
+    existing_description: target.description ?? '',
+  });
+
+  await sendMessage(chatId,
+    `📝 <b>¿Confirmas agregar esta nota?</b>\n\n` +
+    `📌 <b>${escapeHtml(target.summary ?? summary)}</b>\n` +
+    `📅 ${escapeHtml(formatDateTime(target.start.dateTime ?? target.start.date))}\n\n` +
+    `Nota a agregar:\n<i>"${escapeHtml(notes)}"</i>\n\n` +
+    `Responde <b>"sí"</b> para confirmar o <b>"no"</b> para cancelar 🎙️`,
+  );
+}
+
 // ─── Manejador de mensajes de texto ──────────────────────────────────────────
 
 async function handleTextCommands(chatId, text, calendarId) {
@@ -693,14 +876,20 @@ async function handleTextCommands(chatId, text, calendarId) {
     await sendMessage(chatId,
       `👋 <b>¡Hola! Soy tu asistente de agenda por voz.</b> 🎙️\n\n` +
       `Envíame notas de voz y gestionaré tu Google Calendar automáticamente.\n\n` +
-      `<b>Ejemplos:</b>\n` +
-      `• <i>"Agendar cita con el médico mañana a las 10"</i>\n` +
-      `• <i>"Reunión con el equipo el martes a las 9"</i>\n` +
-      `• <i>"¿Qué tengo hoy?"</i>\n` +
-      `• <i>"Cancelar la reunión del viernes"</i>\n\n` +
-      `<b>Comandos disponibles:</b>\n` +
-      `/start — Mostrar este mensaje\n` +
-      `/hoy — Ver tu agenda de hoy`,
+      `<b>¿Qué puedo hacer?</b>\n` +
+      `📅 <i>"Agendar cita con el médico mañana a las 10"</i>\n` +
+      `🔍 <i>"¿Qué tengo hoy?"</i> o <i>"¿Qué tengo el martes?"</i>\n` +
+      `🗑 <i>"Cancelar la reunión del viernes"</i>\n` +
+      `🔄 <i>"Mover la reunión del martes al miércoles a las 4"</i>\n` +
+      `📝 <i>"Agrégale al evento de mañana: llevar documentos"</i>\n\n` +
+      `<b>Recordatorios automáticos:</b>\n` +
+      `• ⏰ 30 min antes de cada evento\n` +
+      `• 🌅 Resumen del día cada mañana a las 8\n` +
+      `• 🌙 Preview del día siguiente cada noche a las 21\n` +
+      `• 📆 Resumen de la semana los domingos a las 10\n\n` +
+      `<b>Comandos:</b>\n` +
+      `/hoy — Ver tu agenda de hoy\n` +
+      `/help — Mostrar este mensaje`,
     );
     return;
   }

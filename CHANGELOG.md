@@ -5,6 +5,54 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [2.1.0] — 2026-06-08
+
+### Añadido (Notificaciones automáticas + Mover/Anotar eventos)
+
+- **`netlify/functions/evening-preview.js`** — Preview nocturno automático:
+  - Todos los días a las 21:00 hora Chile muestra los eventos del día siguiente.
+  - Cron: `0 1 * * *` (01:00 UTC).
+
+- **`netlify/functions/weekly-summary.js`** — Resumen semanal:
+  - Cada domingo a las 10:00 hora Chile muestra toda la semana entrante (lun–dom) agrupada por día.
+  - Cron: `0 14 * * 0`.
+
+- **`netlify/functions/event-reminders.js`** — Recordatorios 30 min antes:
+  - Corre cada 15 minutos buscando eventos que comiencen en los próximos 20–45 min.
+  - Deduplicación en tabla `reminders` de Supabase para no enviar el mismo aviso dos veces.
+  - Limpieza automática de registros > 30 días.
+  - Cron: `*/15 * * * *`.
+
+- **Intent `mover`** — Mover eventos por voz:
+  - Ejemplo: _"Mueve la reunión del martes al miércoles a las 4"_.
+  - Busca el evento en el calendario, muestra el cambio propuesto y pide confirmación.
+  - Conserva la duración original del evento si no se especifica hora de fin.
+  - Nuevo estado: `AWAITING_MOVE_CONFIRM`.
+  - Registra la acción `'moved'` en `event_log`.
+
+- **Intent `anotar`** — Agregar notas a eventos existentes:
+  - Ejemplo: _"Agrega al evento de mañana: llevar documentos firmados"_.
+  - Busca el evento, muestra la nota propuesta y pide confirmación.
+  - Si ya tenía descripción, la nota se agrega a continuación (no la sobreescribe).
+  - Nuevo estado: `AWAITING_NOTE_CONFIRM`.
+  - Registra la acción `'noted'` en `event_log`.
+
+- **`supabase/migration_v2.sql`** — Migración incremental para proyectos existentes:
+  - Agrega tabla `reminders`.
+  - Actualiza el CHECK de `event_log.action` para incluir `'moved'` y `'noted'`.
+
+- **`calendar.js`** — nueva función `updateCalendarEvent(eventId, calendarId, updates)`.
+- **`supabase.js`** — nuevas funciones `hasReminderBeenSent`, `markReminderSent`, `cleanOldReminders`.
+- **`/help`** actualizado con todos los comandos y ejemplos de las nuevas funcionalidades.
+
+### Cambiado
+
+- Prompt NLU en `gemini.js` ampliado con intents `mover` y `anotar`, campos `new_start_time` / `new_end_time`.
+- `netlify.toml` con 4 funciones scheduled activas.
+- `detectSimpleIntent` reforzado con detección de `'force'` (agendar de todas formas).
+
+---
+
 ## [2.0.0] — 2026-06-08
 
 ### Añadido (Supabase + Conversación fluida)

@@ -15,10 +15,25 @@
 [functions."telegram-bot"]
   timeout = 26
 
-# Resumen diario: lunes a viernes a las 08:00 hora Chile (12:00 UTC con UTC-4)
+# Resumen diario: lunes a viernes a las 08:00 hora Chile (12:00 UTC)
 [functions."daily-summary"]
   timeout = 30
   schedule = "0 12 * * 1-5"
+
+# Preview nocturno: todos los días a las 21:00 hora Chile (01:00 UTC día siguiente)
+[functions."evening-preview"]
+  timeout = 30
+  schedule = "0 1 * * *"
+
+# Resumen semanal: domingos a las 10:00 hora Chile (14:00 UTC)
+[functions."weekly-summary"]
+  timeout = 30
+  schedule = "0 14 * * 0"
+
+# Recordatorios: cada 15 minutos
+[functions."event-reminders"]
+  timeout = 30
+  schedule = "*/15 * * * *"
 
 [[redirects]]
   from   = "/api/*"

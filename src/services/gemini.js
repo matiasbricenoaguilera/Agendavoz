@@ -103,16 +103,18 @@ ${buildDateContext()}
 
 Responde ÚNICAMENTE con un objeto JSON válido con esta estructura exacta:
 {
-  "intent": "agendar" | "cancelar" | "consultar" | "desconocido",
+  "intent": "agendar" | "cancelar" | "consultar" | "mover" | "anotar" | "desconocido",
   "summary": "Título claro y conciso del evento (máx 60 caracteres)",
   "start_time": "2026-06-08T15:00:00-04:00",
   "end_time": "2026-06-08T16:00:00-04:00",
   "notes": "",
+  "new_start_time": null,
+  "new_end_time": null,
   "date_specified": true,
   "time_specified": true
 }
 
-Reglas:
+Reglas generales:
 1. Si no se especifica hora de fin, asume exactamente 1 hora de duración.
 2. Si no se menciona explícitamente un día o fecha, usa hoy y marca "date_specified": false.
 3. Si no se menciona explícitamente una hora, usa el valor por defecto y marca "time_specified": false:
@@ -121,10 +123,23 @@ Reglas:
    - Llamadas → 11:00
    - Actividades sociales o cenas → 19:00
    - Cualquier otro evento → 12:00
-4. Si el usuario SÍ dijo un día ("mañana", "el martes", "el 15") marca "date_specified": true.
-5. Si el usuario SÍ dijo una hora ("a las 3", "a las 15:00") marca "time_specified": true.
+4. Si el usuario SÍ dijo un día marca "date_specified": true.
+5. Si el usuario SÍ dijo una hora marca "time_specified": true.
 6. Usa siempre formato ISO 8601 con offset -04:00.
 7. No incluyas markdown, solo el JSON puro.
+
+Reglas por intent:
+- "mover": El usuario quiere cambiar el horario de un evento existente.
+  • start_time = fecha/hora aproximada del evento ORIGINAL (para buscarlo).
+  • new_start_time = nuevo horario deseado con fecha completa.
+  • new_end_time = nueva hora de fin (si no se dice, suma la misma duración o 1 hora).
+  • date_specified y time_specified aplican sobre new_start_time.
+- "anotar": El usuario quiere agregar una nota o descripción a un evento existente.
+  • start_time = fecha/hora aproximada del evento.
+  • notes = la nota o texto a agregar.
+  • new_start_time = null, new_end_time = null.
+- "consultar": start_time = fecha del día a consultar (si dice "mañana" usa la fecha correcta).
+- "cancelar": start_time = fecha/hora aproximada del evento a cancelar.
 `.trim();
 
   const response = await client.chat.completions.create({
