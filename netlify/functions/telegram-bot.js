@@ -1047,13 +1047,27 @@ async function handleTextCommands(chatId, text, calendarId) {
 
   if (lower === '/mipanel') {
     try {
+      // Asegurarse de que el usuario existe en Supabase.
+      // Los usuarios de USER_CALENDARS (pre-onboarding) no tienen registro en la DB.
+      const existing = await getUserByTelegramId(chatId).catch(() => null);
+      if (!existing) {
+        const envCalendar = getCalendarFromEnv(chatId);
+        if (envCalendar) {
+          // Registrar automáticamente como usuario activo
+          await createUser(String(chatId));
+          await updateUser(chatId, { calendar_id: envCalendar, status: 'active' });
+          logger.info('Usuario de USER_CALENDARS auto-registrado en Supabase', { chatId, envCalendar });
+        }
+      }
+
       const url = await generateMagicLink(chatId);
       await sendMessage(chatId,
         `🌐 <b>Tu panel personal (válido 30 minutos):</b>\n\n` +
         `<a href="${url}">👉 Abrir mi agenda</a>\n\n` +
         `Desde ahí puedes ver tu historial y cambiar tus preferencias.`,
       );
-    } catch {
+    } catch (err) {
+      logger.error('Error generando magic link', { chatId, err: err.message });
       await sendMessage(chatId, '❌ No pude generar tu enlace. Intenta de nuevo en un momento.');
     }
     return;

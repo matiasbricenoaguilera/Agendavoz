@@ -5,6 +5,14 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [2.2.1] — 2026-06-08
+
+### Corregido
+
+- **Bug crítico `/mipanel`**: Los usuarios de `USER_CALENDARS` que nunca completaron onboarding no tenían registro en la tabla `users` de Supabase, causando que el dashboard retornara "enlace inválido o expirado" (HTTP 401). Ahora, al usar `/mipanel`, el bot auto-registra al usuario como activo en Supabase usando su `calendar_id` del entorno antes de generar el magic link.
+
+---
+
 ## [2.1.0] — 2026-06-08
 
 ### Añadido (Notificaciones automáticas + Mover/Anotar eventos)
