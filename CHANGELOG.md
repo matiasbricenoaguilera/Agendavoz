@@ -5,6 +5,15 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [2.2.2] — 2026-06-08
+
+### Añadido
+
+- **Panel admin — botón "Eliminar usuario"**: Nuevo botón 🗑️ en la tabla de usuarios que borra todos los registros del usuario (perfil, historial de eventos, conversaciones, magic links y recordatorios). La próxima vez que esa persona escriba al bot, el sistema la trata como nueva y la guía por el onboarding completo.
+- **Endpoint `POST /admin-api?action=delete-user`**: Elimina en paralelo todos los datos del usuario en Supabase.
+
+---
+
 ## [2.2.1] — 2026-06-08
 
 ### Corregido

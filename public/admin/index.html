@@ -145,7 +145,7 @@
           <span class="nav-icon">📋</span> Historial
         </button>
       </nav>
-      <div class="sidebar-footer">v2.1 · agendavoz.netlify.app</div>
+      <div class="sidebar-footer">v2.2 · agendavoz.netlify.app</div>
     </aside>
 
     <!-- Main -->
@@ -367,6 +367,7 @@ async function loadUsers() {
       <td><div class="actions">
         <button class="btn btn-primary" onclick="openPrefs('${u.telegram_id}')">✏️ Editar</button>
         <button class="btn ${toggleClass}" onclick="toggleUser('${u.telegram_id}','${newStatus}')">${toggleLabel}</button>
+        <button class="btn btn-red" onclick="deleteUser('${u.telegram_id}', '${esc(u.name ?? u.telegram_id)}')" title="Eliminar usuario y reiniciar registro">🗑️</button>
       </div></td>
     </tr>`;
   }).join('');
@@ -398,6 +399,27 @@ async function toggleUser(telegramId, newStatus) {
   if (!confirm(`¿Confirmas cambiar el estado a "${newStatus}"?`)) return;
   await api(`${API}?action=toggle-user`, { method: 'POST', body: JSON.stringify({ telegramId, status: newStatus }) });
   loadUsers();
+}
+
+async function deleteUser(telegramId, name) {
+  const confirmed = confirm(
+    `⚠️ ¿Eliminar completamente a "${name}"?\n\n` +
+    `Esto borrará:\n` +
+    `• Su perfil y preferencias\n` +
+    `• Su historial de eventos\n` +
+    `• Sus conversaciones pendientes\n\n` +
+    `La próxima vez que escriba al bot deberá registrarse de nuevo.\n\n` +
+    `Esta acción no se puede deshacer.`
+  );
+  if (!confirmed) return;
+  const res = await api(`${API}?action=delete-user`, { method: 'POST', body: JSON.stringify({ telegramId }) });
+  if (res.ok) {
+    loadUsers();
+    loadStats();
+    loadRecent();
+  } else {
+    alert('Error al eliminar el usuario. Intenta de nuevo.');
+  }
 }
 
 function openPrefs(telegramId) {

@@ -120,6 +120,25 @@ export const handler = async (event) => {
       return ok({ success: true });
     }
 
+    // ── POST delete-user ──────────────────────────────────────────────────────
+    // Elimina TODOS los registros del usuario para que vuelva al onboarding.
+    if (event.httpMethod === 'POST' && action === 'delete-user') {
+      const { telegramId } = JSON.parse(event.body ?? '{}');
+      if (!telegramId) return error('telegramId requerido', 400);
+
+      const id = String(telegramId);
+      await Promise.all([
+        sb.from('users').delete().eq('telegram_id', id),
+        sb.from('conversations').delete().eq('telegram_id', id),
+        sb.from('magic_links').delete().eq('telegram_id', id),
+        sb.from('reminders').delete().eq('telegram_id', id),
+        sb.from('event_log').delete().eq('telegram_id', id),
+      ]);
+
+      logger.info('Usuario eliminado completamente', { telegramId: id });
+      return ok({ success: true });
+    }
+
     // ── GET history ───────────────────────────────────────────────────────────
     if (event.httpMethod === 'GET' && action === 'history') {
       const params = event.queryStringParameters ?? {};
