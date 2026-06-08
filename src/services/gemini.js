@@ -166,6 +166,7 @@ export function detectSimpleIntent(text = '') {
   if (/^(primer[ao]?|uno|1|primera? opcion?|opcion? 1)(\s|$)/.test(t)) return 'slot_1';
   if (/^(segund[ao]?|dos|2|segunda? opcion?|opcion? 2)(\s|$)/.test(t)) return 'slot_2';
   if (/(reemplazar?|sobrescribir?|sobreescribir?|borrar?|eliminar?|tercera?|3|el existente|quita|borra)/.test(t)) return 'overwrite';
+  if (/(de todas formas?|igual(mente)?|cuarta?|4|agendalo igual|agendalo de todas|sin importar|doble|superponer?)/.test(t)) return 'force';
 
   return 'unknown';
 }

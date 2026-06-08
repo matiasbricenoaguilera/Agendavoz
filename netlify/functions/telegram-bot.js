@@ -320,6 +320,12 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
           context.transcription ?? textContent,
         );
 
+      } else if (intent === 'force') {
+        // Agendar igualmente, dejando ambos eventos superpuestos
+        await clearConversation(chatId);
+        const forcedEvent = { ...event, start_time: requested_start, end_time: requested_end };
+        await forceScheduleEvent(chatId, forcedEvent, calendarId, context.transcription ?? textContent);
+
       } else if (intent === 'no') {
         await clearConversation(chatId);
         await sendMessage(chatId, '↩️ Cancelado. No se agendó ningún evento.');
@@ -330,6 +336,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
           '• <b>"primera"</b> o <b>"1"</b> — primer horario disponible\n' +
           '• <b>"segunda"</b> o <b>"2"</b> — segundo horario disponible\n';
         if (busy_event) msg += '• <b>"reemplazar"</b> — sobreescribir el evento existente\n';
+        msg += '• <b>"de todas formas"</b> o <b>"4"</b> — agendar aunque el horario esté ocupado\n';
         msg += '• <b>"no"</b> — cancelar 🎙️';
         await sendMessage(chatId, msg);
       }
@@ -531,6 +538,7 @@ async function scheduleEvent(chatId, event, calendarId, transcription) {
     });
 
     if (busyEvent) msg += `3️⃣ Reemplazar <i>${escapeHtml(busyEvent.summary)}</i>\n`;
+    msg += `4️⃣ Agendar de todas formas (ambos eventos quedarán simultáneos)\n`;
     msg += `\nResponde con tu elección o <b>"no"</b> para cancelar 🎙️`;
 
     await sendMessage(chatId, msg);
@@ -568,6 +576,30 @@ async function overwriteEvent(chatId, event, slot, busyEvent, calendarId, transc
     `✅ Se agendó: <b>${escapeHtml(event.summary)}</b>\n` +
     `📅 ${escapeHtml(formatDateTime(slot.start))}\n` +
     `⏱ Hasta las ${escapeHtml(formatTimeOnly(slot.end))}\n\n` +
+    `<a href="${created.htmlLink}">👉 Ver en Google Calendar</a>`,
+  );
+}
+
+// ─── Agendar aunque haya conflicto (doble agenda) ────────────────────────────
+
+async function forceScheduleEvent(chatId, event, calendarId, transcription) {
+  const created = await createCalendarEvent({ ...event, calendarId });
+
+  await logEvent(chatId, calendarId, {
+    id:           created.id,
+    summary:      event.summary,
+    start_time:   event.start_time,
+    end_time:     event.end_time,
+    transcription,
+    action:       'created',
+  });
+
+  await sendMessage(chatId,
+    `✅ <b>¡Evento agendado (horario compartido):</b>\n\n` +
+    `📌 <b>${escapeHtml(event.summary)}</b>\n` +
+    `📅 ${escapeHtml(formatDateTime(event.start_time))}\n` +
+    `⏱ Hasta las ${escapeHtml(formatTimeOnly(event.end_time))}\n\n` +
+    `ℹ️ Este evento se superpone con otro existente.\n` +
     `<a href="${created.htmlLink}">👉 Ver en Google Calendar</a>`,
   );
 }
