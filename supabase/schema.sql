@@ -3,6 +3,37 @@
 -- Ejecutar en el SQL Editor de tu proyecto Supabase
 -- ============================================================
 
+-- ─── Tabla: users ────────────────────────────────────────
+-- Usuarios registrados con preferencias y estado de onboarding.
+CREATE TABLE IF NOT EXISTS users (
+  telegram_id       TEXT        PRIMARY KEY,
+  name              TEXT,
+  calendar_id       TEXT,
+  status            TEXT        NOT NULL DEFAULT 'onboarding'
+                    CHECK (status IN ('onboarding', 'active', 'disabled')),
+  -- Preferencias de notificaciones
+  reminder_minutes  INTEGER     NOT NULL DEFAULT 30,
+  morning_summary   BOOLEAN     NOT NULL DEFAULT true,
+  morning_hour      INTEGER     NOT NULL DEFAULT 8,
+  evening_preview   BOOLEAN     NOT NULL DEFAULT true,
+  weekly_summary    BOOLEAN     NOT NULL DEFAULT true,
+  -- Metadata
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ─── Tabla: magic_links ───────────────────────────────────
+-- Tokens de acceso temporal para el dashboard de usuario (30 min).
+CREATE TABLE IF NOT EXISTS magic_links (
+  token       TEXT        PRIMARY KEY,
+  telegram_id TEXT        NOT NULL,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  used        BOOLEAN     NOT NULL DEFAULT false,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS magic_links_telegram_idx ON magic_links (telegram_id);
+
 -- ─── Tabla: conversations ─────────────────────────────────
 -- Almacena el estado de conversación activo por usuario.
 -- Solo puede haber un estado pendiente por usuario a la vez.
@@ -48,6 +79,8 @@ CREATE INDEX IF NOT EXISTS reminders_sent_at_idx ON reminders (sent_at);
 -- ─── Row Level Security ────────────────────────────────────
 -- La función usa la service role key, que omite RLS.
 -- Habilitamos RLS de todas formas como buena práctica.
+ALTER TABLE users         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE magic_links   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE event_log     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reminders     ENABLE ROW LEVEL SECURITY;

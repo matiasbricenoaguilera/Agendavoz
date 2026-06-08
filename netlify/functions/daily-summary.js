@@ -13,44 +13,31 @@ import { resolve } from 'path';
 import { config as loadEnv } from 'dotenv';
 loadEnv({ path: resolve(process.cwd(), '.env') });
 
-import { sendMessage }   from '../../src/services/telegram.js';
-import { listEvents }    from '../../src/services/calendar.js';
+import { sendMessage }      from '../../src/services/telegram.js';
+import { listEvents }        from '../../src/services/calendar.js';
+import { getAllActiveUsers }  from '../../src/services/supabase.js';
 import {
-  formatTimeOnly, formatDateLong, getChileDateString,
+  formatTimeOnly, getChileDateString,
 } from '../../src/utils/dateUtils.js';
 import { logger } from '../../src/utils/logger.js';
 
-const TIMEZONE        = 'America/Santiago';
+const TIMEZONE         = 'America/Santiago';
 const CHILE_UTC_OFFSET = '-04:00';
 
 export const handler = async () => {
   logger.info('Iniciando envío de resumen diario');
 
-  const raw     = process.env.USER_CALENDARS ?? '';
-  const entries = raw.split(',').map((e) => e.trim()).filter(Boolean);
-
-  if (entries.length === 0) {
-    logger.warn('USER_CALENDARS vacío, nada que enviar');
-    return { statusCode: 200 };
-  }
+  const users = await getAllActiveUsers();
+  if (users.length === 0) { logger.warn('Sin usuarios activos'); return { statusCode: 200 }; }
 
   const today   = new Date();
   const dateStr = getChileDateString(today);
   const dayStart = `${dateStr}T00:00:00${CHILE_UTC_OFFSET}`;
   const dayEnd   = `${dateStr}T23:59:59${CHILE_UTC_OFFSET}`;
-  const dayLabel = today.toLocaleDateString('es-CL', {
-    timeZone: TIMEZONE,
-    weekday: 'long',
-    day:     'numeric',
-    month:   'long',
-  });
+  const dayLabel = today.toLocaleDateString('es-CL', { timeZone: TIMEZONE, weekday: 'long', day: 'numeric', month: 'long' });
 
-  for (const entry of entries) {
-    const colonIdx = entry.indexOf(':');
-    if (colonIdx === -1) continue;
-
-    const chatId     = entry.slice(0, colonIdx).trim();
-    const calendarId = entry.slice(colonIdx + 1).trim();
+  for (const { chatId, calendarId, morningSummary } of users) {
+    if (!morningSummary) continue; // Respeta preferencia del usuario
 
     try {
       const events = await listEvents(dayStart, dayEnd, calendarId);

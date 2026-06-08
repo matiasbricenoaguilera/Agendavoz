@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mi Agenda Personal</title>
+<style>
+  :root {
+    --bg: #f0f9ff; --primary: #0ea5e9; --primary-dark: #0284c7;
+    --card: #fff; --border: #e0f2fe; --text: #0c4a6e; --muted: #64748b;
+    --green: #10b981; --red: #ef4444; --yellow: #f59e0b;
+    --radius: 14px; --shadow: 0 1px 3px rgba(0,0,0,.07), 0 6px 16px rgba(14,165,233,.08);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+  /* ── Loading / Error ── */
+  .fullscreen { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1.5rem; flex-direction: column; gap: 1rem; text-align: center; }
+  .fullscreen .icon { font-size: 3rem; }
+  .fullscreen h2 { font-size: 1.25rem; }
+  .fullscreen p { color: var(--muted); font-size: .9rem; max-width: 300px; }
+
+  /* ── Header ── */
+  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 1rem 1.5rem; position: sticky; top: 0; z-index: 10; box-shadow: 0 1px 8px rgba(14,165,233,.1); }
+  .header-inner { max-width: 720px; margin: auto; display: flex; align-items: center; justify-content: space-between; }
+  .header-inner .brand { display: flex; align-items: center; gap: .75rem; }
+  .header-inner .brand span { font-size: 1.5rem; }
+  .header-inner .user-info h1 { font-size: 1rem; font-weight: 700; }
+  .header-inner .user-info p { font-size: .78rem; color: var(--muted); }
+  .tg-btn { background: var(--primary); color: #fff; border: none; border-radius: 8px; padding: .5rem .9rem; font-size: .82rem; font-weight: 600; text-decoration: none; display: inline-flex; align-items: center; gap: .4rem; }
+
+  /* ── Tabs ── */
+  .tabs { max-width: 720px; margin: 1.5rem auto 0; padding: 0 1rem; display: flex; gap: .5rem; }
+  .tab { padding: .55rem 1rem; border-radius: 99px; font-size: .875rem; font-weight: 600; border: 2px solid transparent; cursor: pointer; transition: all .15s; color: var(--muted); background: transparent; }
+  .tab.active { background: var(--primary); color: #fff; }
+  .tab:not(.active):hover { background: #e0f2fe; color: var(--primary); }
+
+  /* ── Content ── */
+  .content { max-width: 720px; margin: 1.5rem auto 3rem; padding: 0 1rem; }
+  .section { display: none; }
+  .section.active { display: block; }
+
+  /* ── Stats ── */
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+  .stat { background: var(--card); border-radius: var(--radius); padding: 1.1rem; box-shadow: var(--shadow); text-align: center; }
+  .stat .val { font-size: 1.75rem; font-weight: 700; color: var(--primary); }
+  .stat .lbl { font-size: .75rem; color: var(--muted); margin-top: .2rem; }
+
+  /* ── Next event card ── */
+  .next-event { background: linear-gradient(135deg, var(--primary), var(--primary-dark)); color: #fff; border-radius: var(--radius); padding: 1.5rem; margin-bottom: 1.5rem; box-shadow: var(--shadow); }
+  .next-event .label { font-size: .78rem; opacity: .8; text-transform: uppercase; letter-spacing: .06em; margin-bottom: .5rem; }
+  .next-event h2 { font-size: 1.2rem; margin-bottom: .4rem; }
+  .next-event .time { font-size: .9rem; opacity: .85; }
+  .no-next { background: var(--card); border-radius: var(--radius); padding: 1.5rem; text-align: center; box-shadow: var(--shadow); color: var(--muted); }
+
+  /* ── Cards / History ── */
+  .card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; margin-bottom: 1rem; }
+  .card-header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+  .card-header h3 { font-size: .95rem; font-weight: 700; }
+  .history-item { padding: .85rem 1.25rem; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; gap: 1rem; }
+  .history-item:last-child { border-bottom: none; }
+  .history-icon { font-size: 1.2rem; flex-shrink: 0; margin-top: .1rem; }
+  .history-body { flex: 1; min-width: 0; }
+  .history-body .title { font-weight: 600; font-size: .9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .history-body .meta { font-size: .78rem; color: var(--muted); margin-top: .2rem; }
+  .history-body .transcript { font-size: .78rem; color: var(--muted); font-style: italic; margin-top: .2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { display: inline-block; padding: .15rem .5rem; border-radius: 99px; font-size: .7rem; font-weight: 600; }
+  .badge-green { background: #d1fae5; color: #065f46; }
+  .badge-red { background: #fee2e2; color: #991b1b; }
+  .badge-yellow { background: #fef3c7; color: #92400e; }
+  .badge-blue { background: #dbeafe; color: #1e40af; }
+  .empty { text-align: center; padding: 2.5rem; color: var(--muted); font-size: .9rem; }
+
+  /* ── Preferences ── */
+  .pref-section { margin-bottom: 1.5rem; }
+  .pref-section h4 { font-size: .82rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: .75rem; }
+  .pref-item { background: var(--card); border-radius: var(--radius); padding: 1rem 1.25rem; margin-bottom: .5rem; box-shadow: var(--shadow); display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+  .pref-item .info { flex: 1; }
+  .pref-item .info strong { display: block; font-size: .9rem; }
+  .pref-item .info span { font-size: .78rem; color: var(--muted); }
+  .pref-item select, .pref-item input[type=number] { padding: .4rem .65rem; border: 1.5px solid var(--border); border-radius: 8px; font-size: .875rem; color: var(--text); outline: none; width: 100px; }
+  .toggle-wrap { position: relative; width: 44px; height: 24px; flex-shrink: 0; }
+  .toggle-wrap input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; inset: 0; background: #cbd5e1; border-radius: 24px; cursor: pointer; transition: .2s; }
+  .slider:before { content: ''; position: absolute; height: 18px; width: 18px; left: 3px; top: 3px; background: white; border-radius: 50%; transition: .2s; }
+  input:checked + .slider { background: var(--primary); }
+  input:checked + .slider:before { transform: translateX(20px); }
+  .save-btn { width: 100%; padding: .85rem; background: var(--primary); color: #fff; border: none; border-radius: var(--radius); font-size: 1rem; font-weight: 700; cursor: pointer; margin-top: 1rem; transition: background .15s; }
+  .save-btn:hover { background: var(--primary-dark); }
+  .save-msg { text-align: center; color: var(--green); font-weight: 600; font-size: .9rem; margin-top: .75rem; display: none; }
+</style>
+</head>
+<body>
+
+<div id="loading" class="fullscreen">
+  <div class="icon">⏳</div>
+  <h2>Cargando tu agenda...</h2>
+</div>
+
+<div id="error" class="fullscreen" style="display:none">
+  <div class="icon">🔗</div>
+  <h2>Enlace inválido o expirado</h2>
+  <p>El enlace de acceso ha expirado o ya fue usado. Escribe <strong>/mipanel</strong> en el bot para obtener uno nuevo.</p>
+</div>
+
+<div id="app" style="display:none">
+  <header>
+    <div class="header-inner">
+      <div class="brand">
+        <span>🎙️</span>
+        <div class="user-info">
+          <h1 id="userName">Mi Agenda</h1>
+          <p id="userCalendar"></p>
+        </div>
+      </div>
+      <a href="https://t.me/" id="tgLink" class="tg-btn">💬 Bot</a>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('home')">🏠 Inicio</button>
+    <button class="tab" onclick="showTab('history')">📋 Historial</button>
+    <button class="tab" onclick="showTab('prefs')">⚙️ Preferencias</button>
+  </div>
+
+  <div class="content">
+
+    <!-- Inicio -->
+    <div class="section active" id="tab-home">
+      <div id="nextEventWrap"></div>
+      <div class="stats">
+        <div class="stat"><div class="val" id="statWeek">—</div><div class="lbl">Esta semana</div></div>
+        <div class="stat"><div class="val" id="statMonth">—</div><div class="lbl">Este mes</div></div>
+        <div class="stat"><div class="val" id="statTotal">—</div><div class="lbl">Total</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><h3>📋 Últimos eventos</h3></div>
+        <div id="recentList"></div>
+      </div>
+    </div>
+
+    <!-- Historial -->
+    <div class="section" id="tab-history">
+      <div class="card">
+        <div class="card-header"><h3>📋 Todo el historial</h3></div>
+        <div id="historyList"></div>
+      </div>
+    </div>
+
+    <!-- Preferencias -->
+    <div class="section" id="tab-prefs">
+      <div class="pref-section">
+        <h4>📅 Resúmenes automáticos</h4>
+        <div class="pref-item">
+          <div class="info"><strong>Resumen matutino</strong><span>Recibir tu agenda cada mañana</span></div>
+          <label class="toggle-wrap"><input type="checkbox" id="pMorningSummary"><span class="slider"></span></label>
+        </div>
+        <div class="pref-item">
+          <div class="info"><strong>Hora del resumen</strong><span>Horario de envío</span></div>
+          <select id="pMorningHour">
+            <option value="7">7:00 AM</option>
+            <option value="8">8:00 AM</option>
+            <option value="9">9:00 AM</option>
+          </select>
+        </div>
+        <div class="pref-item">
+          <div class="info"><strong>Preview nocturno</strong><span>Ver mañana a las 21:00</span></div>
+          <label class="toggle-wrap"><input type="checkbox" id="pEveningPreview"><span class="slider"></span></label>
+        </div>
+        <div class="pref-item">
+          <div class="info"><strong>Resumen semanal</strong><span>Recibir tu semana los domingos</span></div>
+          <label class="toggle-wrap"><input type="checkbox" id="pWeeklySummary"><span class="slider"></span></label>
+        </div>
+      </div>
+      <div class="pref-section">
+        <h4>⏰ Recordatorios</h4>
+        <div class="pref-item">
+          <div class="info"><strong>Anticipación</strong><span>Minutos antes de cada evento</span></div>
+          <select id="pReminder">
+            <option value="15">15 min</option>
+            <option value="30">30 min</option>
+            <option value="60">60 min</option>
+          </select>
+        </div>
+      </div>
+      <button class="save-btn" onclick="savePrefs()">Guardar preferencias</button>
+      <div class="save-msg" id="saveMsg">✅ Preferencias guardadas</div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const API = '/.netlify/functions/user-portal';
+let token = '';
+let userData = null;
+let historyData = [];
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+async function init() {
+  token = new URLSearchParams(location.search).get('token') ?? sessionStorage.getItem('userToken') ?? '';
+  if (!token) { showError(); return; }
+
+  try {
+    const res  = await fetch(`${API}?action=validate&token=${token}`);
+    if (!res.ok) { showError(); return; }
+    const data = await res.json();
+    userData = data.user;
+    sessionStorage.setItem('userToken', token);
+
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+
+    document.getElementById('userName').textContent    = userData.name ? `Hola, ${userData.name} 👋` : '¡Hola!';
+    document.getElementById('userCalendar').textContent = userData.calendar_id ?? '';
+    loadHistory();
+    loadPrefs();
+  } catch { showError(); }
+}
+
+function showError() {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('error').style.display   = 'flex';
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+  document.getElementById(`tab-${name}`).classList.add('active');
+  event.target.classList.add('active');
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+async function loadHistory() {
+  const res = await fetch(`${API}?action=history&token=${token}`);
+  historyData = await res.json();
+  renderHome();
+  renderHistory();
+}
+
+function renderHome() {
+  const now   = new Date();
+  const week  = new Date(now); week.setDate(week.getDate() - 7);
+  const month = new Date(now); month.setDate(1);
+
+  const weekCount  = historyData.filter(e => e.action === 'created' && new Date(e.created_at) >= week).length;
+  const monthCount = historyData.filter(e => e.action === 'created' && new Date(e.created_at) >= month).length;
+  const totalCount = historyData.filter(e => e.action === 'created').length;
+
+  document.getElementById('statWeek').textContent  = weekCount;
+  document.getElementById('statMonth').textContent = monthCount;
+  document.getElementById('statTotal').textContent = totalCount;
+
+  // Próximo evento (no disponible sin acceso directo al calendario, mostrar más reciente creado)
+  const created = historyData.filter(e => e.action === 'created' && e.start_time && new Date(e.start_time) >= now)
+    .sort((a,b) => new Date(a.start_time) - new Date(b.start_time));
+
+  const nw = document.getElementById('nextEventWrap');
+  if (created.length) {
+    const e = created[0];
+    nw.innerHTML = `<div class="next-event">
+      <div class="label">⏰ Próximo evento</div>
+      <h2>${esc(e.summary ?? 'Evento')}</h2>
+      <div class="time">${fmtDate(e.start_time)}</div>
+    </div>`;
+  } else {
+    nw.innerHTML = `<div class="no-next">✨ No hay eventos próximos registrados</div>`;
+  }
+
+  const recent = historyData.slice(0, 5);
+  document.getElementById('recentList').innerHTML = recent.length
+    ? recent.map(historyRow).join('')
+    : '<div class="empty">Sin actividad reciente</div>';
+}
+
+function renderHistory() {
+  document.getElementById('historyList').innerHTML = historyData.length
+    ? historyData.map(historyRow).join('')
+    : '<div class="empty">No hay eventos registrados aún</div>';
+}
+
+function historyRow(e) {
+  const icons = { created:'✅', cancelled:'🗑️', overwritten:'♻️', moved:'🔄', noted:'📝' };
+  const labels = { created:'Agendado', cancelled:'Cancelado', overwritten:'Reemplazado', moved:'Movido', noted:'Nota agregada' };
+  const classes = { created:'badge-green', cancelled:'badge-red', overwritten:'badge-yellow', moved:'badge-blue', noted:'badge-blue' };
+  return `<div class="history-item">
+    <div class="history-icon">${icons[e.action]??'📌'}</div>
+    <div class="history-body">
+      <div class="title">${esc(e.summary ?? 'Sin título')} <span class="badge ${classes[e.action]??'badge-blue'}">${labels[e.action]??e.action}</span></div>
+      <div class="meta">${e.start_time ? fmtDate(e.start_time) : ''} · ${fmtDate(e.created_at)}</div>
+      ${e.transcription ? `<div class="transcript">"${esc(e.transcription)}"</div>` : ''}
+    </div>
+  </div>`;
+}
+
+// ── Preferences ───────────────────────────────────────────────────────────────
+function loadPrefs() {
+  if (!userData) return;
+  document.getElementById('pMorningSummary').checked = userData.morning_summary ?? true;
+  document.getElementById('pMorningHour').value      = userData.morning_hour ?? 8;
+  document.getElementById('pEveningPreview').checked = userData.evening_preview ?? true;
+  document.getElementById('pWeeklySummary').checked  = userData.weekly_summary ?? true;
+  document.getElementById('pReminder').value         = userData.reminder_minutes ?? 30;
+}
+
+async function savePrefs() {
+  const body = {
+    token,
+    morning_summary:  document.getElementById('pMorningSummary').checked,
+    morning_hour:     Number(document.getElementById('pMorningHour').value),
+    evening_preview:  document.getElementById('pEveningPreview').checked,
+    weekly_summary:   document.getElementById('pWeeklySummary').checked,
+    reminder_minutes: Number(document.getElementById('pReminder').value),
+  };
+  await fetch(`${API}?action=preferences`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const msg = document.getElementById('saveMsg');
+  msg.style.display = 'block';
+  setTimeout(() => msg.style.display = 'none', 3000);
+}
+
+// ── Utils ─────────────────────────────────────────────────────────────────────
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('es-CL', { timeZone:'America/Santiago', day:'2-digit', month:'2-digit', year:'2-digit', hour:'2-digit', minute:'2-digit' });
+}
+function esc(t) { return String(t??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+init();
+</script>
+</body>
+</html>

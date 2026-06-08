@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agenda por Voz — Panel Admin</title>
+<style>
+  :root {
+    --bg: #f1f5f9; --sidebar: #1e293b; --sidebar-hover: #334155;
+    --primary: #6366f1; --primary-dark: #4f46e5;
+    --green: #10b981; --red: #ef4444; --yellow: #f59e0b; --blue: #3b82f6;
+    --card: #ffffff; --border: #e2e8f0; --text: #0f172a; --muted: #64748b;
+    --radius: 12px; --shadow: 0 1px 3px rgba(0,0,0,.08), 0 4px 12px rgba(0,0,0,.06);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+  /* ── Login ── */
+  #login { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1rem; }
+  .login-card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 2.5rem; width: 100%; max-width: 380px; text-align: center; }
+  .login-card h1 { font-size: 1.5rem; margin-bottom: .5rem; }
+  .login-card p { color: var(--muted); font-size: .9rem; margin-bottom: 2rem; }
+  .login-card input { width: 100%; padding: .75rem 1rem; border: 1.5px solid var(--border); border-radius: 8px; font-size: 1rem; margin-bottom: 1rem; outline: none; transition: border-color .2s; }
+  .login-card input:focus { border-color: var(--primary); }
+  .login-card button { width: 100%; padding: .8rem; background: var(--primary); color: #fff; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background .2s; }
+  .login-card button:hover { background: var(--primary-dark); }
+  .login-error { color: var(--red); font-size: .85rem; margin-top: .5rem; }
+
+  /* ── App layout ── */
+  #app { display: none; min-height: 100vh; }
+  .layout { display: flex; min-height: 100vh; }
+  .sidebar { width: 240px; background: var(--sidebar); color: #fff; display: flex; flex-direction: column; position: fixed; top: 0; bottom: 0; left: 0; z-index: 100; overflow-y: auto; }
+  .sidebar-header { padding: 1.5rem 1.25rem 1rem; border-bottom: 1px solid #334155; }
+  .sidebar-header h2 { font-size: 1rem; font-weight: 700; }
+  .sidebar-header p { font-size: .75rem; color: #94a3b8; margin-top: .25rem; }
+  .sidebar nav { padding: .75rem .75rem; flex: 1; }
+  .nav-btn { display: flex; align-items: center; gap: .75rem; width: 100%; padding: .65rem 1rem; border: none; background: transparent; color: #cbd5e1; font-size: .9rem; border-radius: 8px; cursor: pointer; text-align: left; transition: background .15s, color .15s; }
+  .nav-btn:hover { background: var(--sidebar-hover); color: #fff; }
+  .nav-btn.active { background: var(--primary); color: #fff; }
+  .nav-icon { font-size: 1rem; width: 1.25rem; text-align: center; }
+  .sidebar-footer { padding: 1rem 1.25rem; border-top: 1px solid #334155; font-size: .75rem; color: #64748b; }
+  .main { margin-left: 240px; padding: 2rem; flex: 1; min-width: 0; }
+  .page-header { margin-bottom: 1.75rem; }
+  .page-header h1 { font-size: 1.5rem; font-weight: 700; }
+  .page-header p { color: var(--muted); font-size: .9rem; margin-top: .25rem; }
+
+  /* ── Cards ── */
+  .card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.5rem; }
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+  .stat-card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.25rem; }
+  .stat-card .label { font-size: .78rem; color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: .04em; }
+  .stat-card .value { font-size: 2rem; font-weight: 700; margin-top: .25rem; }
+  .stat-card.green .value { color: var(--green); }
+  .stat-card.blue .value { color: var(--blue); }
+  .stat-card.yellow .value { color: var(--yellow); }
+  .stat-card.red .value { color: var(--red); }
+
+  /* ── Table ── */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+  thead th { padding: .65rem 1rem; text-align: left; font-size: .75rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border-bottom: 1.5px solid var(--border); white-space: nowrap; }
+  tbody td { padding: .85rem 1rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: #f8fafc; }
+
+  /* ── Badges ── */
+  .badge { display: inline-block; padding: .2rem .65rem; border-radius: 99px; font-size: .75rem; font-weight: 600; }
+  .badge-green { background: #d1fae5; color: #065f46; }
+  .badge-yellow { background: #fef3c7; color: #92400e; }
+  .badge-red { background: #fee2e2; color: #991b1b; }
+  .badge-blue { background: #dbeafe; color: #1e40af; }
+
+  /* ── Buttons ── */
+  .btn { padding: .45rem .9rem; border: none; border-radius: 7px; font-size: .82rem; font-weight: 600; cursor: pointer; transition: opacity .15s; }
+  .btn:hover { opacity: .85; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-green { background: var(--green); color: #fff; }
+  .btn-red { background: var(--red); color: #fff; }
+  .btn-ghost { background: var(--border); color: var(--text); }
+
+  /* ── Sections ── */
+  .section { display: none; }
+  .section.active { display: block; }
+
+  /* ── Modal ── */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: none; align-items: center; justify-content: center; z-index: 200; padding: 1rem; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: #fff; border-radius: var(--radius); padding: 2rem; width: 100%; max-width: 480px; box-shadow: 0 20px 60px rgba(0,0,0,.2); }
+  .modal h3 { margin-bottom: 1.25rem; font-size: 1.1rem; }
+  .form-row { margin-bottom: 1rem; }
+  .form-row label { display: block; font-size: .82rem; font-weight: 600; margin-bottom: .4rem; color: var(--muted); }
+  .form-row input, .form-row select { width: 100%; padding: .6rem .85rem; border: 1.5px solid var(--border); border-radius: 8px; font-size: .9rem; outline: none; }
+  .form-row input:focus, .form-row select:focus { border-color: var(--primary); }
+  .form-row .toggle { display: flex; align-items: center; gap: .75rem; cursor: pointer; }
+  .form-row .toggle input[type=checkbox] { width: 18px; height: 18px; cursor: pointer; accent-color: var(--primary); }
+  .modal-actions { display: flex; gap: .75rem; justify-content: flex-end; margin-top: 1.5rem; }
+
+  /* ── Action col ── */
+  .actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+
+  /* ── Loading ── */
+  .loading { text-align: center; padding: 3rem; color: var(--muted); }
+  .empty { text-align: center; padding: 3rem; color: var(--muted); font-size: .9rem; }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .sidebar { width: 100%; height: auto; position: relative; }
+    .main { margin-left: 0; padding: 1rem; }
+    .layout { flex-direction: column; }
+    .stats-grid { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Login -->
+<div id="login">
+  <div class="login-card">
+    <div style="font-size:2.5rem;margin-bottom:.75rem">🤖</div>
+    <h1>Agenda por Voz</h1>
+    <p>Panel de Administración</p>
+    <input type="password" id="pwInput" placeholder="Contraseña de administrador" onkeydown="if(event.key==='Enter')doLogin()">
+    <button onclick="doLogin()">Entrar</button>
+    <div class="login-error" id="loginError"></div>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app">
+  <div class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h2>🤖 Agenda por Voz</h2>
+        <p>Panel Admin</p>
+      </div>
+      <nav>
+        <button class="nav-btn active" onclick="showSection('dashboard')" id="btn-dashboard">
+          <span class="nav-icon">📊</span> Dashboard
+        </button>
+        <button class="nav-btn" onclick="showSection('users')" id="btn-users">
+          <span class="nav-icon">👥</span> Usuarios
+        </button>
+        <button class="nav-btn" onclick="showSection('history')" id="btn-history">
+          <span class="nav-icon">📋</span> Historial
+        </button>
+      </nav>
+      <div class="sidebar-footer">v2.1 · agendavoz.netlify.app</div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+
+      <!-- Dashboard -->
+      <section class="section active" id="sec-dashboard">
+        <div class="page-header">
+          <h1>Dashboard</h1>
+          <p>Resumen general del sistema</p>
+        </div>
+        <div class="stats-grid" id="statsGrid">
+          <div class="loading">Cargando...</div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:1rem;font-size:1rem">Actividad reciente</h3>
+          <div class="table-wrap">
+            <table id="recentTable">
+              <thead><tr><th>Usuario</th><th>Evento</th><th>Acción</th><th>Fecha</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Usuarios -->
+      <section class="section" id="sec-users">
+        <div class="page-header">
+          <h1>Usuarios</h1>
+          <p>Gestiona quién tiene acceso al bot y sus preferencias</p>
+        </div>
+        <div class="card">
+          <div class="table-wrap">
+            <table id="usersTable">
+              <thead>
+                <tr>
+                  <th>Nombre</th><th>Telegram ID</th><th>Calendario</th>
+                  <th>Estado</th><th>Registro</th><th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Historial -->
+      <section class="section" id="sec-history">
+        <div class="page-header">
+          <h1>Historial de eventos</h1>
+          <p>Registro de todas las acciones realizadas</p>
+        </div>
+        <div class="card" style="margin-bottom:1rem">
+          <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:center">
+            <select id="filterUser" onchange="loadHistory()" style="padding:.5rem .75rem;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.875rem">
+              <option value="">Todos los usuarios</option>
+            </select>
+            <select id="filterAction" onchange="loadHistory()" style="padding:.5rem .75rem;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.875rem">
+              <option value="">Todas las acciones</option>
+              <option value="created">Creados</option>
+              <option value="cancelled">Cancelados</option>
+              <option value="overwritten">Sobreescritos</option>
+              <option value="moved">Movidos</option>
+              <option value="noted">Anotados</option>
+            </select>
+          </div>
+        </div>
+        <div class="card">
+          <div class="table-wrap">
+            <table id="historyTable">
+              <thead>
+                <tr><th>Usuario</th><th>Evento</th><th>Acción</th><th>Inicio</th><th>Transcripción</th><th>Fecha</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- Modal de preferencias -->
+<div class="modal-overlay" id="prefsModal">
+  <div class="modal">
+    <h3>✏️ Editar usuario</h3>
+    <input type="hidden" id="editTelegramId">
+    <div class="form-row">
+      <label>Nombre</label>
+      <input type="text" id="editName" placeholder="Nombre del usuario">
+    </div>
+    <div class="form-row">
+      <label>Email del calendario (Google)</label>
+      <input type="email" id="editCalendar" placeholder="usuario@gmail.com">
+    </div>
+    <div class="form-row">
+      <label>Minutos de anticipación del recordatorio</label>
+      <select id="editReminder">
+        <option value="15">15 minutos</option>
+        <option value="30">30 minutos</option>
+        <option value="60">60 minutos</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Hora del resumen matutino</label>
+      <select id="editMorningHour">
+        <option value="7">7:00 AM</option>
+        <option value="8">8:00 AM</option>
+        <option value="9">9:00 AM</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label class="toggle">
+        <input type="checkbox" id="editMorningSummary"> Recibir resumen matutino
+      </label>
+    </div>
+    <div class="form-row">
+      <label class="toggle">
+        <input type="checkbox" id="editEveningPreview"> Recibir preview nocturno
+      </label>
+    </div>
+    <div class="form-row">
+      <label class="toggle">
+        <input type="checkbox" id="editWeeklySummary"> Recibir resumen semanal
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="savePrefs()">Guardar cambios</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '/.netlify/functions/admin-api';
+let adminPw = '';
+let allUsers = [];
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+async function doLogin() {
+  const pw = document.getElementById('pwInput').value.trim();
+  if (!pw) return;
+  try {
+    const res = await fetch(`${API}?action=stats`, { headers: { 'x-admin-password': pw } });
+    if (!res.ok) { document.getElementById('loginError').textContent = 'Contraseña incorrecta'; return; }
+    adminPw = pw;
+    sessionStorage.setItem('adminPw', pw);
+    document.getElementById('login').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+    loadAll();
+  } catch { document.getElementById('loginError').textContent = 'Error de conexión'; }
+}
+
+function api(path, opts = {}) {
+  return fetch(path, { ...opts, headers: { 'x-admin-password': adminPw, 'Content-Type': 'application/json', ...(opts.headers ?? {}) } });
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+function showSection(name) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(`sec-${name}`).classList.add('active');
+  document.getElementById(`btn-${name}`).classList.add('active');
+  if (name === 'history') loadHistory();
+}
+
+// ── Load all ──────────────────────────────────────────────────────────────────
+async function loadAll() { await Promise.all([loadStats(), loadUsers(), loadRecent()]); }
+
+async function loadStats() {
+  const res  = await api(`${API}?action=stats`);
+  const data = await res.json();
+  document.getElementById('statsGrid').innerHTML = `
+    <div class="stat-card green"><div class="label">Usuarios activos</div><div class="value">${data.activeUsers}</div></div>
+    <div class="stat-card yellow"><div class="label">En onboarding</div><div class="value">${data.onboarding}</div></div>
+    <div class="stat-card blue"><div class="label">Total eventos</div><div class="value">${data.totalEvents}</div></div>
+    <div class="stat-card"><div class="label">Eventos hoy</div><div class="value">${data.todayEvents}</div></div>
+  `;
+}
+
+async function loadRecent() {
+  const res   = await api(`${API}?action=history&limit=8`);
+  const items = await res.json();
+  const tbody = document.querySelector('#recentTable tbody');
+  if (!items.length) { tbody.innerHTML = '<tr><td colspan="4" class="empty">Sin actividad reciente</td></tr>'; return; }
+  tbody.innerHTML = items.map(e => `
+    <tr>
+      <td>${e.telegram_id}</td>
+      <td>${esc(e.summary ?? '—')}</td>
+      <td>${actionBadge(e.action)}</td>
+      <td>${fmtDate(e.created_at)}</td>
+    </tr>`).join('');
+}
+
+async function loadUsers() {
+  const res = await api(`${API}?action=users`);
+  allUsers  = await res.json();
+  const tbody = document.querySelector('#usersTable tbody');
+  const filterSel = document.getElementById('filterUser');
+  filterSel.innerHTML = '<option value="">Todos los usuarios</option>';
+
+  if (!allUsers.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty">No hay usuarios registrados</td></tr>'; return; }
+
+  tbody.innerHTML = allUsers.map(u => {
+    filterSel.innerHTML += `<option value="${u.telegram_id}">${esc(u.name ?? u.telegram_id)}</option>`;
+    const statusBadge = u.status === 'active' ? '<span class="badge badge-green">Activo</span>'
+      : u.status === 'onboarding' ? '<span class="badge badge-yellow">Onboarding</span>'
+      : '<span class="badge badge-red">Desactivado</span>';
+    const toggleLabel = u.status === 'disabled' ? 'Activar' : 'Desactivar';
+    const toggleClass = u.status === 'disabled' ? 'btn-green' : 'btn-red';
+    const newStatus   = u.status === 'disabled' ? 'active' : 'disabled';
+    return `<tr>
+      <td><strong>${esc(u.name ?? '—')}</strong></td>
+      <td><code style="font-size:.8rem">${u.telegram_id}</code></td>
+      <td style="font-size:.8rem">${esc(u.calendar_id ?? '—')}</td>
+      <td>${statusBadge}</td>
+      <td>${fmtDate(u.created_at)}</td>
+      <td><div class="actions">
+        <button class="btn btn-primary" onclick="openPrefs('${u.telegram_id}')">✏️ Editar</button>
+        <button class="btn ${toggleClass}" onclick="toggleUser('${u.telegram_id}','${newStatus}')">${toggleLabel}</button>
+      </div></td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadHistory() {
+  const user   = document.getElementById('filterUser').value;
+  const action = document.getElementById('filterAction').value;
+  let url = `${API}?action=history`;
+  if (user)   url += `&telegramId=${encodeURIComponent(user)}`;
+  if (action) url += `&action=${action}`;
+  const res   = await api(url);
+  const items = await res.json();
+  const tbody = document.querySelector('#historyTable tbody');
+  if (!items.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty">Sin registros</td></tr>'; return; }
+  tbody.innerHTML = items.map(e => `
+    <tr>
+      <td>${getUserName(e.telegram_id)}</td>
+      <td>${esc(e.summary ?? '—')}</td>
+      <td>${actionBadge(e.action)}</td>
+      <td style="font-size:.8rem">${e.start_time ? fmtDate(e.start_time) : '—'}</td>
+      <td style="font-size:.78rem;color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.transcription ?? '')}">${esc(e.transcription ?? '—')}</td>
+      <td>${fmtDate(e.created_at)}</td>
+    </tr>`).join('');
+}
+
+// ── User actions ──────────────────────────────────────────────────────────────
+async function toggleUser(telegramId, newStatus) {
+  if (!confirm(`¿Confirmas cambiar el estado a "${newStatus}"?`)) return;
+  await api(`${API}?action=toggle-user`, { method: 'POST', body: JSON.stringify({ telegramId, status: newStatus }) });
+  loadUsers();
+}
+
+function openPrefs(telegramId) {
+  const u = allUsers.find(u => u.telegram_id === telegramId);
+  if (!u) return;
+  document.getElementById('editTelegramId').value    = telegramId;
+  document.getElementById('editName').value          = u.name ?? '';
+  document.getElementById('editCalendar').value      = u.calendar_id ?? '';
+  document.getElementById('editReminder').value      = u.reminder_minutes ?? 30;
+  document.getElementById('editMorningHour').value   = u.morning_hour ?? 8;
+  document.getElementById('editMorningSummary').checked  = u.morning_summary ?? true;
+  document.getElementById('editEveningPreview').checked  = u.evening_preview ?? true;
+  document.getElementById('editWeeklySummary').checked   = u.weekly_summary ?? true;
+  document.getElementById('prefsModal').classList.add('open');
+}
+
+function closeModal() { document.getElementById('prefsModal').classList.remove('open'); }
+
+async function savePrefs() {
+  const telegramId = document.getElementById('editTelegramId').value;
+  const body = {
+    telegramId,
+    name:            document.getElementById('editName').value,
+    calendar_id:     document.getElementById('editCalendar').value,
+    reminder_minutes: Number(document.getElementById('editReminder').value),
+    morning_hour:    Number(document.getElementById('editMorningHour').value),
+    morning_summary:  document.getElementById('editMorningSummary').checked,
+    evening_preview:  document.getElementById('editEveningPreview').checked,
+    weekly_summary:   document.getElementById('editWeeklySummary').checked,
+  };
+  await api(`${API}?action=update-prefs`, { method: 'POST', body: JSON.stringify(body) });
+  closeModal();
+  loadUsers();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function getUserName(id) {
+  const u = allUsers.find(u => u.telegram_id === id);
+  return u?.name ? `<strong>${esc(u.name)}</strong>` : `<code style="font-size:.8rem">${id}</code>`;
+}
+
+function actionBadge(a) {
+  const map = { created:'badge-green', cancelled:'badge-red', overwritten:'badge-yellow', moved:'badge-blue', noted:'badge-blue' };
+  const labels = { created:'Creado', cancelled:'Cancelado', overwritten:'Reemplazado', moved:'Movido', noted:'Anotado' };
+  return `<span class="badge ${map[a]??'badge-blue'}">${labels[a]??a}</span>`;
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('es-CL', { timeZone: 'America/Santiago', day:'2-digit', month:'2-digit', year:'2-digit', hour:'2-digit', minute:'2-digit' });
+}
+
+function esc(t) { return String(t ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ── Auto-login ────────────────────────────────────────────────────────────────
+window.onload = () => {
+  const saved = sessionStorage.getItem('adminPw');
+  if (saved) { document.getElementById('pwInput').value = saved; doLogin(); }
+};
+document.getElementById('prefsModal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
+</script>
+</body>
+</html>

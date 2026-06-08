@@ -11,36 +11,31 @@ import { resolve } from 'path';
 import { config as loadEnv } from 'dotenv';
 loadEnv({ path: resolve(process.cwd(), '.env') });
 
-import { sendMessage }        from '../../src/services/telegram.js';
-import { listEvents }         from '../../src/services/calendar.js';
-import { hasReminderBeenSent, markReminderSent, cleanOldReminders } from '../../src/services/supabase.js';
-import { formatTimeOnly, formatDateLong, getChileDateString }        from '../../src/utils/dateUtils.js';
-import { logger }             from '../../src/utils/logger.js';
+import { sendMessage }       from '../../src/services/telegram.js';
+import { listEvents }        from '../../src/services/calendar.js';
+import {
+  getAllActiveUsers, hasReminderBeenSent, markReminderSent, cleanOldReminders,
+}                            from '../../src/services/supabase.js';
+import { formatTimeOnly, getChileDateString } from '../../src/utils/dateUtils.js';
+import { logger }            from '../../src/utils/logger.js';
 
-const WINDOW_START_MIN = 20; // Buscar eventos que comienzan en mínimo 20 min
-const WINDOW_END_MIN   = 45; // y máximo 45 min (ventana de 25 min por ejecución)
+const DEFAULT_WINDOW_MIN = 25; // Ventana de detección alrededor de los minutos configurados
 
 export const handler = async () => {
   logger.info('Ejecutando chequeo de recordatorios');
 
-  const raw     = process.env.USER_CALENDARS ?? '';
-  const entries = raw.split(',').map((e) => e.trim()).filter(Boolean);
+  const users = await getAllActiveUsers();
+  if (users.length === 0) return { statusCode: 200 };
 
-  if (entries.length === 0) return { statusCode: 200 };
-
-  // Limpiar recordatorios antiguos ocasionalmente (1 de cada 20 ejecuciones ≈ cada 5h)
   if (Math.random() < 0.05) await cleanOldReminders().catch(() => {});
 
-  const now        = new Date();
-  const windowFrom = new Date(now.getTime() + WINDOW_START_MIN * 60 * 1000);
-  const windowTo   = new Date(now.getTime() + WINDOW_END_MIN   * 60 * 1000);
+  const now = new Date();
 
-  for (const entry of entries) {
-    const colonIdx = entry.indexOf(':');
-    if (colonIdx === -1) continue;
-
-    const chatId     = entry.slice(0, colonIdx).trim();
-    const calendarId = entry.slice(colonIdx + 1).trim();
+  for (const { chatId, calendarId, reminderMinutes } of users) {
+    // Ventana centrada en reminderMinutes con ±12 min de margen para cubrir la ejecución cada 15 min
+    const margin     = 12;
+    const windowFrom = new Date(now.getTime() + (reminderMinutes - margin) * 60 * 1000);
+    const windowTo   = new Date(now.getTime() + (reminderMinutes + margin) * 60 * 1000);
 
     try {
       const events = await listEvents(windowFrom.toISOString(), windowTo.toISOString(), calendarId);
@@ -57,7 +52,7 @@ export const handler = async () => {
         const minutesLeft = Math.round((new Date(event.start.dateTime) - now) / 60000);
 
         const msg =
-          `⏰ <b>Recordatorio — en ${minutesLeft} minutos:</b>\n\n` +
+          `⏰ <b>Recordatorio — en ~${minutesLeft} minutos:</b>\n\n` +
           `📌 <b>${escapeHtml(event.summary ?? 'Sin título')}</b>\n` +
           `🕐 ${startStr}${endStr ? ` — ${endStr}` : ''}\n` +
           (event.description ? `📝 ${escapeHtml(event.description.slice(0, 120))}\n` : '') +

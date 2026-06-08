@@ -11,9 +11,10 @@ import { resolve } from 'path';
 import { config as loadEnv } from 'dotenv';
 loadEnv({ path: resolve(process.cwd(), '.env') });
 
-import { sendMessage }   from '../../src/services/telegram.js';
-import { listEvents }    from '../../src/services/calendar.js';
-import { formatTimeOnly, formatDateLong, getChileDateString } from '../../src/utils/dateUtils.js';
+import { sendMessage }      from '../../src/services/telegram.js';
+import { listEvents }        from '../../src/services/calendar.js';
+import { getAllActiveUsers }  from '../../src/services/supabase.js';
+import { formatTimeOnly, getChileDateString } from '../../src/utils/dateUtils.js';
 import { logger } from '../../src/utils/logger.js';
 
 const TIMEZONE         = 'America/Santiago';
@@ -22,34 +23,21 @@ const CHILE_UTC_OFFSET = '-04:00';
 export const handler = async () => {
   logger.info('Iniciando resumen semanal');
 
-  const raw     = process.env.USER_CALENDARS ?? '';
-  const entries = raw.split(',').map((e) => e.trim()).filter(Boolean);
+  const users = await getAllActiveUsers();
+  if (users.length === 0) { logger.warn('Sin usuarios activos'); return { statusCode: 200 }; }
 
-  if (entries.length === 0) {
-    logger.warn('USER_CALENDARS vacío');
-    return { statusCode: 200 };
-  }
-
-  // Calcular rango lunes–domingo de la semana entrante en hora Chile
-  const now       = new Date();
-  const dayOfWeek = now.getUTCDay(); // 0=Dom, 1=Lun ... 6=Sáb
+  const now          = new Date();
+  const dayOfWeek    = now.getUTCDay();
   const daysToMonday = dayOfWeek === 0 ? 1 : 8 - dayOfWeek;
+  const monday       = new Date(now.getTime() + daysToMonday * 24 * 60 * 60 * 1000);
+  const sunday       = new Date(monday.getTime() + 6 * 24 * 60 * 60 * 1000);
+  const weekStart    = `${getChileDateString(monday)}T00:00:00${CHILE_UTC_OFFSET}`;
+  const weekEnd      = `${getChileDateString(sunday)}T23:59:59${CHILE_UTC_OFFSET}`;
+  const mondayLabel  = monday.toLocaleDateString('es-CL', { timeZone: TIMEZONE, day: 'numeric', month: 'long' });
+  const sundayLabel  = sunday.toLocaleDateString('es-CL', { timeZone: TIMEZONE, day: 'numeric', month: 'long' });
 
-  const monday = new Date(now.getTime() + daysToMonday * 24 * 60 * 60 * 1000);
-  const sunday = new Date(monday.getTime() + 6 * 24 * 60 * 60 * 1000);
-
-  const weekStart = `${getChileDateString(monday)}T00:00:00${CHILE_UTC_OFFSET}`;
-  const weekEnd   = `${getChileDateString(sunday)}T23:59:59${CHILE_UTC_OFFSET}`;
-
-  const mondayLabel = monday.toLocaleDateString('es-CL', { timeZone: TIMEZONE, day: 'numeric', month: 'long' });
-  const sundayLabel = sunday.toLocaleDateString('es-CL', { timeZone: TIMEZONE, day: 'numeric', month: 'long' });
-
-  for (const entry of entries) {
-    const colonIdx = entry.indexOf(':');
-    if (colonIdx === -1) continue;
-
-    const chatId     = entry.slice(0, colonIdx).trim();
-    const calendarId = entry.slice(colonIdx + 1).trim();
+  for (const { chatId, calendarId, weeklySummary } of users) {
+    if (!weeklySummary) continue; // Respeta preferencia del usuario
 
     try {
       const events = await listEvents(weekStart, weekEnd, calendarId);

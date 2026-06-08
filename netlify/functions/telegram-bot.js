@@ -23,7 +23,10 @@ import {
   checkAvailability, createCalendarEvent, findNextFreeSlots,
   listEvents, getBusyEvent, deleteCalendarEvent, updateCalendarEvent,
 }                                                                  from '../../src/services/calendar.js';
-import { getConversation, saveConversation, clearConversation, logEvent } from '../../src/services/supabase.js';
+import {
+  getConversation, saveConversation, clearConversation, logEvent,
+  getUserByTelegramId, createUser, updateUser, generateMagicLink,
+} from '../../src/services/supabase.js';
 import {
   formatDateTime, formatDateLong, formatTimeOnly,
   extractDateFromISO, extractTimeFromISO, buildChileISO, addMsToChileISO,
@@ -42,7 +45,6 @@ const REQUIRED_VARS = [
   'TELEGRAM_BOT_TOKEN',
   'OPENAI_API_KEY',
   'GOOGLE_SERVICE_ACCOUNT_JSON',
-  'USER_CALENDARS',
   'SUPABASE_URL',
   'SUPABASE_SERVICE_ROLE_KEY',
 ];
@@ -54,18 +56,26 @@ function assertConfig() {
   if (missing.length > 0) throw new Error(`Variables de entorno faltantes: ${missing.join(', ')}`);
 }
 
-// ─── Mapeo chatId → calendarId ────────────────────────────────────────────────
+// ─── Resolución de calendarId ─────────────────────────────────────────────────
 
-function getCalendarForUser(chatId) {
+/** Lee USER_CALENDARS env var (fallback para usuarios pre-Supabase). */
+function getCalendarFromEnv(chatId) {
   const raw = process.env.USER_CALENDARS ?? '';
   for (const entry of raw.split(',').map((e) => e.trim()).filter(Boolean)) {
     const colonIdx = entry.indexOf(':');
     if (colonIdx === -1) continue;
-    if (entry.slice(0, colonIdx).trim() === String(chatId)) {
-      return entry.slice(colonIdx + 1).trim();
-    }
+    if (entry.slice(0, colonIdx).trim() === String(chatId)) return entry.slice(colonIdx + 1).trim();
   }
   return null;
+}
+
+/** Retorna el calendarId activo de un usuario (Supabase → env fallback). */
+async function getCalendarForUser(chatId) {
+  try {
+    const user = await getUserByTelegramId(chatId);
+    if (user?.status === 'active' && user?.calendar_id) return user.calendar_id;
+  } catch {}
+  return getCalendarFromEnv(chatId);
 }
 
 // ─── Handler principal ────────────────────────────────────────────────────────
@@ -91,10 +101,32 @@ export const handler = async (event) => {
     chatId = message.chat.id;
     logger.info('Mensaje recibido', { chatId, update_id: update.update_id });
 
-    const calendarId = getCalendarForUser(chatId);
+    // ── Determinar estado del usuario ──────────────────────────────────────
+    const supabaseUser = await getUserByTelegramId(chatId).catch(() => null);
+    const envCalendar  = getCalendarFromEnv(chatId);
+
+    // Usuario desactivado
+    if (supabaseUser?.status === 'disabled') {
+      await sendMessage(chatId, '⛔ Tu acceso ha sido desactivado. Contacta al administrador.').catch(() => {});
+      return OK_RESPONSE;
+    }
+
+    // Usuario en onboarding (ya registrado en Supabase pero aún configurando)
+    if (supabaseUser?.status === 'onboarding') {
+      await handleOnboarding(chatId, message);
+      return OK_RESPONSE;
+    }
+
+    // Usuario completamente nuevo (no en Supabase ni en USER_CALENDARS)
+    if (!supabaseUser && !envCalendar) {
+      await handleNewUser(chatId, message);
+      return OK_RESPONSE;
+    }
+
+    // Usuario activo — obtener su calendarId
+    const calendarId = await getCalendarForUser(chatId);
     if (!calendarId) {
-      logger.warn('Usuario no registrado', { chatId });
-      await sendMessage(chatId, '⛔ No tienes acceso a este bot. Contacta al administrador.').catch(() => {});
+      await sendMessage(chatId, '⛔ Tu cuenta no tiene un calendario configurado. Contacta al administrador.').catch(() => {});
       return OK_RESPONSE;
     }
 
@@ -109,6 +141,124 @@ export const handler = async (event) => {
 
   return OK_RESPONSE;
 };
+
+// ─── Onboarding: usuarios nuevos ─────────────────────────────────────────────
+
+/** Primer contacto: el usuario no está en Supabase ni en USER_CALENDARS. */
+async function handleNewUser(chatId, message) {
+  await createUser(String(chatId));
+  await saveConversation(chatId, 'ONBOARDING_NAME', {});
+  await sendMessage(chatId,
+    `👋 ¡Hola! Soy tu asistente de agenda por voz. 🎙️\n\n` +
+    `Voy a configurar tu cuenta en 3 pasos simples.\n\n` +
+    `<b>Paso 1 de 3</b> — ¿Cómo te llamas?`,
+  );
+}
+
+/** Maneja los mensajes de un usuario en proceso de onboarding. */
+async function handleOnboarding(chatId, message) {
+  const text    = message.text?.trim() ?? '';
+  const pending = await getConversation(chatId);
+  const state   = pending?.state;
+
+  switch (state) {
+    case 'ONBOARDING_NAME': {
+      if (!text || text.startsWith('/')) {
+        await sendMessage(chatId, '📝 Por favor dime tu nombre para continuar con la configuración.');
+        return;
+      }
+      const name = text.split(' ')[0]; // Solo el primer nombre
+      await updateUser(chatId, { name });
+
+      // Leer el email de la service account del JSON de credenciales
+      let serviceEmail = 'agenda241088@agenda241088.iam.gserviceaccount.com';
+      try {
+        serviceEmail = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON).client_email;
+      } catch {}
+
+      await saveConversation(chatId, 'ONBOARDING_WAITING_SHARE', { name });
+      await sendMessage(chatId,
+        `¡Hola, <b>${escapeHtml(name)}</b>! 😊\n\n` +
+        `<b>Paso 2 de 3</b> — Compartir tu Google Calendar\n\n` +
+        `Necesito acceso a tu calendario para gestionarlo. Sigue estos pasos:\n\n` +
+        `1. Abre <a href="https://calendar.google.com">Google Calendar</a> en el computador\n` +
+        `2. Haz clic en los tres puntos junto a tu calendario principal\n` +
+        `3. Selecciona <b>Configuración y uso compartido</b>\n` +
+        `4. En <b>"Compartir con personas específicas"</b> agrega:\n` +
+        `   <code>${escapeHtml(serviceEmail)}</code>\n` +
+        `5. Dale permiso <b>"Hacer cambios en eventos"</b>\n` +
+        `6. Guarda los cambios\n\n` +
+        `Cuando termines, escríbeme <b>"listo"</b> ✅`,
+      );
+      break;
+    }
+
+    case 'ONBOARDING_WAITING_SHARE': {
+      const lower = text.toLowerCase();
+      if (!lower.includes('listo') && !lower.includes('ok') && !lower.includes('hice') && !lower.includes('ya')) {
+        await sendMessage(chatId,
+          `Cuando hayas compartido el calendario con la cuenta de servicio, escríbeme <b>"listo"</b> para continuar. 😊`,
+        );
+        return;
+      }
+      await saveConversation(chatId, 'ONBOARDING_EMAIL', pending?.context ?? {});
+      await sendMessage(chatId,
+        `¡Perfecto! 👍\n\n` +
+        `<b>Paso 3 de 3</b> — Dime el email del calendario que compartiste.\n\n` +
+        `Generalmente es tu Gmail:\n<i>ejemplo: tumail@gmail.com</i>`,
+      );
+      break;
+    }
+
+    case 'ONBOARDING_EMAIL': {
+      const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+      const match = text.match(emailRegex);
+      if (!match) {
+        await sendMessage(chatId, `⚠️ No reconocí ese email. Por favor escribe tu dirección de Gmail completa, por ejemplo:\n<i>tumail@gmail.com</i>`);
+        return;
+      }
+      const calendarId = match[0].toLowerCase();
+
+      // Verificar que el calendario es accesible
+      await sendMessage(chatId, '🔍 Verificando acceso al calendario...');
+      try {
+        const { listEvents } = await import('../../src/services/calendar.js');
+        const now = new Date().toISOString();
+        await listEvents(now, now, calendarId);
+      } catch (err) {
+        logger.warn('Calendario no accesible en onboarding', { chatId, calendarId, err: err.message });
+        await sendMessage(chatId,
+          `❌ No pude acceder al calendario <i>${escapeHtml(calendarId)}</i>.\n\n` +
+          `Asegúrate de haber compartido el calendario con la cuenta correcta y de haber dado permiso <b>"Hacer cambios en eventos"</b>.\n\n` +
+          `Intenta de nuevo con el email del calendario. Si el problema persiste, verifica los permisos en Google Calendar. 🔧`,
+        );
+        return;
+      }
+
+      // ¡Todo bien! Activar usuario
+      const ctx = pending?.context ?? {};
+      await updateUser(chatId, { calendar_id: calendarId, status: 'active' });
+      await clearConversation(chatId);
+
+      await sendMessage(chatId,
+        `✅ <b>¡Listo, ${escapeHtml(ctx.name ?? '')}! Tu cuenta está configurada.</b>\n\n` +
+        `🎉 Ya puedo gestionar tu calendario. Vamos a hacer una prueba:\n\n` +
+        `Envíame una nota de voz diciendo algo como:\n` +
+        `<i>"Agendar reunión de prueba mañana a las 10 de la mañana"</i> 🎙️`,
+      );
+      break;
+    }
+
+    default:
+      // Estado desconocido — reiniciar onboarding
+      await clearConversation(chatId);
+      await sendMessage(chatId,
+        `Parece que hubo un problema con tu configuración. Vamos a empezar de nuevo.\n\n` +
+        `¿Cómo te llamas?`,
+      );
+      await saveConversation(chatId, 'ONBOARDING_NAME', {});
+  }
+}
 
 // ─── Procesamiento principal de mensajes ──────────────────────────────────────
 
@@ -889,8 +1039,23 @@ async function handleTextCommands(chatId, text, calendarId) {
       `• 📆 Resumen de la semana los domingos a las 10\n\n` +
       `<b>Comandos:</b>\n` +
       `/hoy — Ver tu agenda de hoy\n` +
+      `/mipanel — Acceder a tu dashboard personal\n` +
       `/help — Mostrar este mensaje`,
     );
+    return;
+  }
+
+  if (lower === '/mipanel') {
+    try {
+      const url = await generateMagicLink(chatId);
+      await sendMessage(chatId,
+        `🌐 <b>Tu panel personal (válido 30 minutos):</b>\n\n` +
+        `<a href="${url}">👉 Abrir mi agenda</a>\n\n` +
+        `Desde ahí puedes ver tu historial y cambiar tus preferencias.`,
+      );
+    } catch {
+      await sendMessage(chatId, '❌ No pude generar tu enlace. Intenta de nuevo en un momento.');
+    }
     return;
   }
 

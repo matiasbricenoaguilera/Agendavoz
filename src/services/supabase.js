@@ -6,15 +6,151 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
+import { randomUUID } from 'crypto';
 import { logger } from '../utils/logger.js';
 
 const CONVERSATION_TTL_MS = 30 * 60 * 1000; // 30 minutos
+const MAGIC_LINK_TTL_MIN  = 30;             // 30 minutos
 
 function getClient() {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error('SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY no están configurados.');
   return createClient(url, key);
+}
+
+// ─── Usuarios ─────────────────────────────────────────────────────────────────
+
+/**
+ * Retorna el registro de un usuario por su Telegram ID.
+ * @returns {Promise<object|null>}
+ */
+export async function getUserByTelegramId(telegramId) {
+  const sb = getClient();
+  const { data } = await sb
+    .from('users')
+    .select('*')
+    .eq('telegram_id', String(telegramId))
+    .maybeSingle();
+  return data ?? null;
+}
+
+/**
+ * Crea un usuario nuevo en estado 'onboarding'.
+ */
+export async function createUser(telegramId) {
+  const sb = getClient();
+  const { data } = await sb
+    .from('users')
+    .upsert({ telegram_id: String(telegramId), updated_at: new Date().toISOString() }, { onConflict: 'telegram_id' })
+    .select()
+    .single();
+  return data;
+}
+
+/**
+ * Actualiza campos arbitrarios de un usuario.
+ * @param {string|number} telegramId
+ * @param {object} updates - Campos a actualizar (name, calendar_id, status, prefs, etc.)
+ */
+export async function updateUser(telegramId, updates) {
+  const sb = getClient();
+  const { error } = await sb
+    .from('users')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('telegram_id', String(telegramId));
+  if (error) logger.error('Error actualizando usuario', { error: error.message });
+}
+
+/**
+ * Retorna todos los usuarios activos combinando Supabase y USER_CALENDARS (fallback).
+ * Los usuarios de Supabase tienen prioridad y sus preferencias se respetan.
+ *
+ * @returns {Promise<Array<{chatId, calendarId, name, reminderMinutes, morningSummary,
+ *           morningHour, eveningPreview, weeklySummary}>>}
+ */
+export async function getAllActiveUsers() {
+  const usersMap = new Map();
+
+  // Fuente 1: Supabase (tiene preferencias individuales)
+  try {
+    const sb = getClient();
+    const { data } = await sb.from('users').select('*').eq('status', 'active');
+    for (const u of data ?? []) {
+      if (!u.calendar_id) continue;
+      usersMap.set(u.telegram_id, {
+        chatId:          u.telegram_id,
+        calendarId:      u.calendar_id,
+        name:            u.name ?? '',
+        reminderMinutes: u.reminder_minutes ?? 30,
+        morningSummary:  u.morning_summary  ?? true,
+        morningHour:     u.morning_hour     ?? 8,
+        eveningPreview:  u.evening_preview  ?? true,
+        weeklySummary:   u.weekly_summary   ?? true,
+      });
+    }
+  } catch (err) {
+    logger.warn('Error leyendo usuarios de Supabase, usando fallback', { err: err.message });
+  }
+
+  // Fuente 2: USER_CALENDARS env var (usuarios pre-Supabase)
+  const raw = process.env.USER_CALENDARS ?? '';
+  for (const entry of raw.split(',').map((e) => e.trim()).filter(Boolean)) {
+    const colonIdx = entry.indexOf(':');
+    if (colonIdx === -1) continue;
+    const chatId     = entry.slice(0, colonIdx).trim();
+    const calendarId = entry.slice(colonIdx + 1).trim();
+    if (!usersMap.has(chatId)) {
+      usersMap.set(chatId, {
+        chatId, calendarId, name: '',
+        reminderMinutes: 30, morningSummary: true, morningHour: 8,
+        eveningPreview: true, weeklySummary: true,
+      });
+    }
+  }
+
+  return Array.from(usersMap.values());
+}
+
+// ─── Magic Links ──────────────────────────────────────────────────────────────
+
+/**
+ * Genera un enlace mágico temporal para que el usuario acceda a su dashboard.
+ * @returns {Promise<string>} URL completa del dashboard con el token.
+ */
+export async function generateMagicLink(telegramId) {
+  const sb      = getClient();
+  const token   = randomUUID();
+  const expires = new Date(Date.now() + MAGIC_LINK_TTL_MIN * 60 * 1000);
+
+  await sb.from('magic_links').insert({
+    token,
+    telegram_id: String(telegramId),
+    expires_at:  expires.toISOString(),
+  });
+
+  const baseUrl = process.env.SITE_URL ?? 'https://agendavoz.netlify.app';
+  return `${baseUrl}/mi-agenda?token=${token}`;
+}
+
+/**
+ * Valida un magic link. Retorna el telegram_id si es válido, o null si no.
+ * Marca el token como usado para que sea de un solo uso.
+ */
+export async function validateMagicLink(token) {
+  const sb = getClient();
+  const { data } = await sb
+    .from('magic_links')
+    .select('*')
+    .eq('token', token)
+    .eq('used', false)
+    .gt('expires_at', new Date().toISOString())
+    .maybeSingle();
+
+  if (!data) return null;
+
+  await sb.from('magic_links').update({ used: true }).eq('token', token);
+  return data.telegram_id;
 }
 
 // ─── Estado de conversación ───────────────────────────────────────────────────
