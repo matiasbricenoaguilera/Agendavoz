@@ -5,6 +5,15 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [2.2.3] — 2026-06-08
+
+### Corregido
+
+- **Acceso post-eliminación**: Al borrar un usuario desde el panel admin, si su chat ID seguía en `USER_CALENDARS`, el bot lo dejaba pasar como si nada. Ahora el control de acceso es exclusivamente por Supabase — si no hay registro, va a onboarding sin importar `USER_CALENDARS`.
+- **Onboarding rápido para re-registros**: Los usuarios de `USER_CALENDARS` que son eliminados y vuelven al bot pasan por un registro corto (solo piden nombre), ya que el calendario ya está compartido con la cuenta de servicio.
+
+---
+
 ## [2.2.2] — 2026-06-08
 
 ### Añadido

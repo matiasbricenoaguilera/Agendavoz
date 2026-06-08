@@ -117,8 +117,12 @@ export const handler = async (event) => {
       return OK_RESPONSE;
     }
 
-    // Usuario completamente nuevo (no en Supabase ni en USER_CALENDARS)
-    if (!supabaseUser && !envCalendar) {
+    // Usuario sin registro en Supabase → onboarding siempre.
+    // USER_CALENDARS ya no otorga acceso directo; solo se usa para
+    // pre-rellenar el calendar_id durante el onboarding o al auto-registrar
+    // usuarios vía /mipanel. Esto garantiza que un usuario eliminado desde
+    // el panel admin deba volver a registrarse.
+    if (!supabaseUser) {
       await handleNewUser(chatId, message);
       return OK_RESPONSE;
     }
@@ -147,6 +151,20 @@ export const handler = async (event) => {
 /** Primer contacto: el usuario no está en Supabase ni en USER_CALENDARS. */
 async function handleNewUser(chatId, message) {
   await createUser(String(chatId));
+
+  // Si el chat_id ya está en USER_CALENDARS el calendario ya está compartido,
+  // así que solo pedimos el nombre y lo activamos automáticamente al responder.
+  const envCalendar = getCalendarFromEnv(chatId);
+  if (envCalendar) {
+    await updateUser(chatId, { calendar_id: envCalendar, status: 'onboarding' });
+    await saveConversation(chatId, 'ONBOARDING_NAME_FAST', {});
+    await sendMessage(chatId,
+      `👋 ¡Hola de nuevo! Para completar tu registro solo necesito saber tu nombre.\n\n` +
+      `¿Cómo te llamas?`,
+    );
+    return;
+  }
+
   await saveConversation(chatId, 'ONBOARDING_NAME', {});
   await sendMessage(chatId,
     `👋 ¡Hola! Soy tu asistente de agenda por voz. 🎙️\n\n` +
@@ -162,6 +180,23 @@ async function handleOnboarding(chatId, message) {
   const state   = pending?.state;
 
   switch (state) {
+    // Onboarding rápido para usuarios de USER_CALENDARS que fueron eliminados
+    // y se están re-registrando. El calendario ya está compartido, solo pedimos nombre.
+    case 'ONBOARDING_NAME_FAST': {
+      if (!text || text.startsWith('/')) {
+        await sendMessage(chatId, '📝 Por favor dime tu nombre para activar tu cuenta.');
+        return;
+      }
+      const name = text.split(' ')[0];
+      await updateUser(chatId, { name, status: 'active' });
+      await clearConversation(chatId);
+      await sendMessage(chatId,
+        `✅ <b>¡Listo, ${escapeHtml(name)}! Tu cuenta está activa nuevamente.</b>\n\n` +
+        `Ya puedes enviarme notas de voz para gestionar tu agenda. 🎙️`,
+      );
+      return;
+    }
+
     case 'ONBOARDING_NAME': {
       if (!text || text.startsWith('/')) {
         await sendMessage(chatId, '📝 Por favor dime tu nombre para continuar con la configuración.');
