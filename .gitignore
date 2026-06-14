@@ -1,27 +1,39 @@
-# Dependencias
+# Dependencias de Node / Web
 node_modules/
+.pnpm-store/
+dist/
+build/
 
-# Variables de entorno — NUNCA subir
-.env
-.env.local
-.env.*.local
+# Entornos virtuales y caché de Python
+.venv/
+env/
+venv/
+ENV/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Datos pesados, Logs y Bases de datos locales
+*.log
+*.db
+*.sqlite3
+.mpremote/
 
 # Netlify
 .netlify/
 
-# Sistema operativo
+# Archivos del sistema y editores
 .DS_Store
 Thumbs.db
-
-# Editor
 .vscode/
 .idea/
-*.swp
-*.swo
 
-# Logs
-*.log
-npm-debug.log*
+# Variables de entorno (¡Seguridad!)
+.env
+.env.local
+.env.*.local
 
 # Archivos de audio temporales usados en pruebas
 tests/*.ogg
