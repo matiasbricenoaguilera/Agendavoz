@@ -756,6 +756,44 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
       break;
     }
 
+    // ── Esperando confirmación para editar título/descripción ───────────────
+    case 'AWAITING_EDIT_CONFIRM': {
+      const intent = detectSimpleIntent(textContent);
+
+      if (intent === 'yes') {
+        await clearConversation(chatId);
+        const { event_id, event_summary, event_start, event_end, new_summary, new_notes } = context;
+
+        const updates = {};
+        if (new_summary) updates.summary = new_summary;
+        if (new_notes !== null && new_notes !== undefined) updates.description = new_notes;
+
+        await updateCalendarEvent(event_id, calendarId, updates);
+        await logEvent(chatId, calendarId, {
+          id:         event_id,
+          summary:    new_summary ?? event_summary,
+          start_time: event_start,
+          end_time:   event_end,
+          action:     'edited',
+        });
+        await setLastEvent(chatId, {
+          id: event_id, summary: new_summary ?? event_summary,
+          start_time: event_start, end_time: event_end,
+        });
+        await sendMessage(chatId,
+          `✏️ <b>Evento actualizado:</b>\n\n` +
+          `📌 <b>${escapeHtml(new_summary ?? event_summary)}</b>\n` +
+          `📅 ${escapeHtml(formatDateTime(event_start))}`,
+        );
+      } else if (intent === 'no') {
+        await clearConversation(chatId);
+        await sendMessage(chatId, '↩️ Cancelado. El evento no fue modificado.');
+      } else {
+        await sendMessage(chatId, '🤔 Responde <b>"sí"</b> para aplicar los cambios o <b>"no"</b> para cancelar. 🎙️');
+      }
+      break;
+    }
+
     default:
       await clearConversation(chatId);
       await sendMessage(chatId, '↩️ Se reinició la conversación. ¿En qué puedo ayudarte?');
@@ -784,6 +822,7 @@ async function processVoiceIntent(chatId, transcription, calendarId) {
     case 'cancelar':  await processCancelarIntent(chatId, eventDetails, transcription, calendarId); break;
     case 'mover':     await processMoverIntent(chatId, eventDetails, transcription, calendarId); break;
     case 'anotar':    await processAnotarIntent(chatId, eventDetails, transcription, calendarId); break;
+    case 'editar':    await processEditarIntent(chatId, eventDetails, transcription, calendarId); break;
     default:
       await sendMessage(chatId,
         '❓ No entendí la acción. Puedes:\n' +
@@ -791,7 +830,8 @@ async function processVoiceIntent(chatId, transcription, calendarId) {
         '• <b>consultar</b> — ver tu agenda\n' +
         '• <b>cancelar</b> — eliminar un evento\n' +
         '• <b>mover</b> — cambiar horario de un evento\n' +
-        '• <b>agregar nota</b> — añadir descripción a un evento',
+        '• <b>agregar nota</b> — añadir descripción a un evento\n' +
+        '• <b>editar</b> — cambiar el título o la descripción de un evento',
       );
   }
 }
@@ -1337,6 +1377,64 @@ async function processAnotarIntent(chatId, eventDetails, transcription, calendar
   );
 }
 
+// ─── Flujo: editar título/descripción de un evento ───────────────────────────
+
+async function processEditarIntent(chatId, eventDetails, transcription, calendarId) {
+  const { summary, start_time, new_summary, new_notes } = eventDetails;
+
+  if (!new_summary && (new_notes === null || new_notes === undefined)) {
+    await sendMessage(chatId,
+      `📋 Entendí que quieres editar el evento: <b>${escapeHtml(summary)}</b>\n\n` +
+      `⚠️ No entendí qué quieres cambiar. Intenta de nuevo:\n` +
+      `<i>"Cambia el nombre de la reunión del martes a 'Reunión con cliente'"</i> 🎙️`,
+    );
+    return;
+  }
+
+  const refDate  = new Date(start_time);
+  const dateStr  = getChileDateString(refDate);
+  const { dayStart, dayEnd } = dayBoundsChileISO(dateStr);
+
+  const events = await listEvents(dayStart, dayEnd, calendarId, summary);
+
+  let target;
+  if (events.length === 0) {
+    // Si el usuario se refiere a "ese evento"/"el anterior", probamos con
+    // el último evento que recordamos para este usuario.
+    target = referencesPreviousEvent(transcription) ? lastEventToTarget(await getLastEvent(chatId)) : null;
+
+    if (!target) {
+      await sendMessage(chatId,
+        `🔍 No encontré <i>"${escapeHtml(summary)}"</i> en ${formatDateLong(start_time)}.\n\n` +
+        `Intenta con otra descripción o fecha. 🎙️`,
+      );
+      return;
+    }
+  } else {
+    target = pickClosestEvent(events, start_time);
+  }
+
+  await saveConversation(chatId, 'AWAITING_EDIT_CONFIRM', {
+    event_id:      target.id,
+    event_summary: target.summary ?? summary,
+    event_start:   target.start.dateTime ?? target.start.date,
+    event_end:     target.end.dateTime   ?? target.end.date,
+    new_summary:   new_summary || null,
+    new_notes:     new_notes ?? null,
+  });
+
+  let msg = `✏️ <b>¿Confirmas estos cambios?</b>\n\n` +
+    `📌 <b>${escapeHtml(target.summary ?? summary)}</b>\n` +
+    `📅 ${escapeHtml(formatDateTime(target.start.dateTime ?? target.start.date))}\n\n`;
+
+  if (new_summary)            msg += `Nuevo título: <b>${escapeHtml(new_summary)}</b>\n`;
+  if (new_notes !== null && new_notes !== undefined) msg += `Nueva descripción:\n<i>"${escapeHtml(new_notes)}"</i>\n`;
+
+  msg += `\nResponde <b>"sí"</b> para confirmar o <b>"no"</b> para cancelar 🎙️`;
+
+  await sendMessage(chatId, msg);
+}
+
 // ─── Manejador de mensajes de texto ──────────────────────────────────────────
 
 async function handleTextCommands(chatId, text, calendarId) {
@@ -1351,7 +1449,8 @@ async function handleTextCommands(chatId, text, calendarId) {
       `🔍 <i>"¿Qué tengo hoy?"</i> o <i>"¿Qué tengo el martes?"</i>\n` +
       `🗑 <i>"Cancelar la reunión del viernes"</i>\n` +
       `🔄 <i>"Mover la reunión del martes al miércoles a las 4"</i>\n` +
-      `📝 <i>"Agrégale al evento de mañana: llevar documentos"</i>\n\n` +
+      `📝 <i>"Agrégale al evento de mañana: llevar documentos"</i>\n` +
+      `✏️ <i>"Cambia el nombre de la reunión del martes a 'Reunión con cliente'"</i>\n\n` +
       `<b>Recordatorios automáticos:</b>\n` +
       `• ⏰ 30 min antes de cada evento\n` +
       `• 🌅 Resumen del día cada mañana a las 8\n` +

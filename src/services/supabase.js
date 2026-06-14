@@ -196,6 +196,7 @@ export async function saveConversation(telegramId, state, context = {}) {
       telegram_id: String(telegramId),
       state,
       context,
+      nudged:     false,
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'telegram_id' },
@@ -214,6 +215,53 @@ export async function clearConversation(telegramId) {
   const sb = getClient();
   await sb.from('conversations').delete().eq('telegram_id', String(telegramId));
   logger.info('Estado de conversación eliminado', { telegramId });
+}
+
+/**
+ * Estados de conversación que representan una confirmación pendiente del
+ * usuario (esperando "sí"/"no" o una elección de opciones).
+ */
+export const PENDING_CONFIRMATION_STATES = [
+  'AWAITING_CONFIRMATION', 'AWAITING_SLOT_CHOICE',
+  'AWAITING_MOVE_CONFIRM', 'AWAITING_MOVE_SLOT_CHOICE',
+  'AWAITING_CANCEL_CONFIRM', 'AWAITING_NOTE_CONFIRM', 'AWAITING_EDIT_CONFIRM',
+];
+
+/**
+ * Retorna conversaciones con una confirmación pendiente desde hace un rato,
+ * que aún no han recibido un recordatorio "¿sigues ahí?" y que todavía no
+ * han expirado (ver CONVERSATION_TTL_MS).
+ *
+ * @param {number} minAgeMinutes - Antigüedad mínima para considerar "estancada".
+ * @returns {Promise<Array<{telegram_id: string, state: string, context: object}>>}
+ */
+export async function getStaleConfirmations(minAgeMinutes = 8) {
+  const sb = getClient();
+  const minAge = new Date(Date.now() - minAgeMinutes * 60 * 1000).toISOString();
+  const maxAge = new Date(Date.now() - CONVERSATION_TTL_MS).toISOString();
+
+  const { data } = await sb
+    .from('conversations')
+    .select('telegram_id, state, context')
+    .in('state', PENDING_CONFIRMATION_STATES)
+    .eq('nudged', false)
+    .lt('updated_at', minAge)
+    .gt('updated_at', maxAge);
+
+  return data ?? [];
+}
+
+/**
+ * Marca una conversación como ya recordada, sin alterar su `updated_at`
+ * (para no reiniciar su TTL de expiración).
+ */
+export async function markConversationNudged(telegramId) {
+  const sb = getClient();
+  const { error } = await sb
+    .from('conversations')
+    .update({ nudged: true })
+    .eq('telegram_id', String(telegramId));
+  if (error) logger.error('Error marcando conversación como recordada', { error: error.message });
 }
 
 // ─── Recordatorios (deduplicación) ───────────────────────────────────────────

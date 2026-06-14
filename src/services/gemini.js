@@ -135,13 +135,15 @@ ${buildDateContext()}
 ${historyContext ? historyContext + '\n' : ''}
 Responde ÚNICAMENTE con un objeto JSON válido con esta estructura exacta:
 {
-  "intent": "agendar" | "cancelar" | "consultar" | "mover" | "anotar" | "desconocido",
+  "intent": "agendar" | "cancelar" | "consultar" | "mover" | "anotar" | "editar" | "desconocido",
   "summary": "Título claro y conciso del evento (máx 60 caracteres)",
   "start_time": "2026-06-08T15:00:00-04:00",
   "end_time": "2026-06-08T16:00:00-04:00",
   "notes": "",
   "new_start_time": null,
   "new_end_time": null,
+  "new_summary": null,
+  "new_notes": null,
   "date_specified": true,
   "time_specified": true,
   "additional_events": []
@@ -171,9 +173,16 @@ Reglas por intent:
   • new_start_time = nuevo horario deseado con fecha completa.
   • new_end_time = nueva hora de fin (si no se dice, suma la misma duración o 1 hora).
   • date_specified y time_specified aplican sobre new_start_time.
-- "anotar": El usuario quiere agregar una nota o descripción a un evento existente.
+- "anotar": El usuario quiere AGREGAR una nota o descripción a un evento existente
+  (sin borrar lo que ya tenía).
   • start_time = fecha/hora aproximada del evento.
   • notes = la nota o texto a agregar.
+  • new_start_time = null, new_end_time = null.
+- "editar": El usuario quiere CAMBIAR el título y/o REEMPLAZAR la descripción de
+  un evento existente (a diferencia de "anotar", que solo agrega texto).
+  • start_time = fecha/hora aproximada del evento a editar (para buscarlo).
+  • new_summary = nuevo título del evento, o null si no lo cambia.
+  • new_notes = nueva descripción que reemplaza la anterior, o null si no la cambia.
   • new_start_time = null, new_end_time = null.
 - "consultar": start_time = fecha del día a consultar (si dice "mañana" usa la fecha correcta).
 - "cancelar": start_time = fecha/hora aproximada del evento a cancelar.
