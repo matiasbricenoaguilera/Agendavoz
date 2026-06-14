@@ -6,13 +6,12 @@
 
 import { google } from 'googleapis';
 import { logger } from '../utils/logger.js';
-import { getChileDateString } from '../utils/dateUtils.js';
+import { getChileDateString, getChileOffsetString } from '../utils/dateUtils.js';
 
 const TIMEZONE          = 'America/Santiago';
 const EVENT_DURATION_MS = 60 * 60 * 1000;     // 1 hora
 const WORKDAY_START_H   = 8;                   // 08:00 Chile
 const WORKDAY_END_H     = 20;                  // 20:00 Chile
-const CHILE_UTC_OFFSET  = '-04:00';
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -38,7 +37,7 @@ function makeChileISO(utcDate, chileHour, chileMinute = 0) {
   const dateStr = getChileDateString(utcDate);
   const hh = String(chileHour).padStart(2, '0');
   const mm = String(chileMinute).padStart(2, '0');
-  return `${dateStr}T${hh}:${mm}:00${CHILE_UTC_OFFSET}`;
+  return `${dateStr}T${hh}:${mm}:00${getChileOffsetString(utcDate)}`;
 }
 
 /**
@@ -109,6 +108,24 @@ export async function getBusyEvent(startTime, endTime, calendarId) {
     start:   first.start.dateTime ?? first.start.date,
     end:     first.end.dateTime   ?? first.end.date,
   };
+}
+
+/**
+ * Obtiene un evento por su ID. Retorna null si no existe.
+ *
+ * @param {string} eventId    - ID del evento en Google Calendar.
+ * @param {string} calendarId - ID del calendario.
+ * @returns {Promise<Object|null>}
+ */
+export async function getEventById(eventId, calendarId) {
+  const calendar = getCalendarClient();
+  try {
+    const response = await calendar.events.get({ calendarId, eventId });
+    return response.data;
+  } catch (err) {
+    if (err.code === 404 || err.response?.status === 404) return null;
+    throw err;
+  }
 }
 
 /**

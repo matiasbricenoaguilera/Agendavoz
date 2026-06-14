@@ -17,20 +17,21 @@ import { resolve } from 'path';
 import { config as loadEnv } from 'dotenv';
 loadEnv({ path: resolve(process.cwd(), '.env') });
 
-import { sendMessage, sendTypingAction, downloadFile }            from '../../src/services/telegram.js';
+import { sendMessage, sendTypingAction, downloadFile, answerCallbackQuery } from '../../src/services/telegram.js';
 import { transcribeAudio, extractEventDetails, detectSimpleIntent } from '../../src/services/gemini.js';
 import {
   checkAvailability, createCalendarEvent, findNextFreeSlots,
-  listEvents, getBusyEvent, deleteCalendarEvent, updateCalendarEvent,
+  listEvents, getBusyEvent, deleteCalendarEvent, updateCalendarEvent, getEventById,
 }                                                                  from '../../src/services/calendar.js';
 import {
   getConversation, saveConversation, clearConversation, logEvent,
   getUserByTelegramId, createUser, updateUser, generateMagicLink,
+  getLastEvent, setLastEvent, getRecentEventHistory,
 } from '../../src/services/supabase.js';
 import {
   formatDateTime, formatDateLong, formatTimeOnly,
   extractDateFromISO, extractTimeFromISO, buildChileISO, addMsToChileISO,
-  getChileDateString, toChileISO,
+  getChileDateString, toChileISO, dayBoundsChileISO,
 }                                                                  from '../../src/utils/dateUtils.js';
 import { logger }                                                  from '../../src/utils/logger.js';
 
@@ -38,7 +39,6 @@ import { logger }                                                  from '../../s
 
 const OK_RESPONSE = { statusCode: 200, body: 'OK' };
 const DEFAULT_DURATION_MS = 60 * 60 * 1000; // 1 hora
-const CHILE_UTC_OFFSET = '-04:00';
 const TIMEZONE = 'America/Santiago';
 
 const REQUIRED_VARS = [
@@ -95,6 +95,12 @@ export const handler = async (event) => {
     assertConfig();
 
     const update  = JSON.parse(event.body ?? '{}');
+
+    if (update.callback_query) {
+      await handleCallbackQuery(update.callback_query);
+      return OK_RESPONSE;
+    }
+
     const message = update.message ?? update.edited_message;
     if (!message) return OK_RESPONSE;
 
@@ -145,6 +151,73 @@ export const handler = async (event) => {
 
   return OK_RESPONSE;
 };
+
+// ─── Botones de recordatorios (confirmar / posponer) ─────────────────────────
+
+/**
+ * Maneja el toque de los botones inline de un recordatorio:
+ * "✅ Ok" (solo confirma recepción) y "⏰ Posponer 15 min" (mueve el evento).
+ */
+async function handleCallbackQuery(callback) {
+  const chatId = callback.message?.chat?.id;
+  const [action, eventId] = (callback.data ?? '').split(':');
+
+  if (!chatId || !eventId) {
+    await answerCallbackQuery(callback.id).catch(() => {});
+    return;
+  }
+
+  try {
+    const calendarId = await getCalendarForUser(chatId);
+    if (!calendarId) {
+      await answerCallbackQuery(callback.id, '⛔ No se encontró tu calendario.').catch(() => {});
+      return;
+    }
+
+    if (action === 'ok') {
+      await answerCallbackQuery(callback.id, '👍 ¡Entendido!');
+
+    } else if (action === 'postpone15') {
+      const ev = await getEventById(eventId, calendarId);
+      if (!ev || !ev.start?.dateTime) {
+        await answerCallbackQuery(callback.id, '⚠️ No encontré ese evento.').catch(() => {});
+        return;
+      }
+
+      const newStart = addMsToChileISO(ev.start.dateTime, 15 * 60 * 1000);
+      const newEnd   = ev.end?.dateTime ? addMsToChileISO(ev.end.dateTime, 15 * 60 * 1000) : newStart;
+
+      await updateCalendarEvent(eventId, calendarId, {
+        start: { dateTime: newStart, timeZone: 'America/Santiago' },
+        end:   { dateTime: newEnd,   timeZone: 'America/Santiago' },
+      });
+
+      await logEvent(chatId, calendarId, {
+        id:         eventId,
+        summary:    ev.summary ?? '',
+        start_time: newStart,
+        end_time:   newEnd,
+        action:     'moved',
+      });
+
+      await setLastEvent(chatId, { id: eventId, summary: ev.summary ?? '', start_time: newStart, end_time: newEnd });
+
+      await answerCallbackQuery(callback.id, '⏰ Evento pospuesto 15 minutos.');
+      await sendMessage(chatId,
+        `⏰ <b>Recordatorio pospuesto:</b>\n\n` +
+        `📌 <b>${escapeHtml(ev.summary ?? 'Sin título')}</b>\n` +
+        `🕐 Nuevo horario: ${escapeHtml(formatTimeOnly(newStart))}`,
+      );
+
+    } else {
+      await answerCallbackQuery(callback.id).catch(() => {});
+    }
+
+  } catch (err) {
+    logger.error('Error procesando callback_query', { error: err.message });
+    await answerCallbackQuery(callback.id, '❌ Ocurrió un error.').catch(() => {});
+  }
+}
 
 // ─── Onboarding: usuarios nuevos ─────────────────────────────────────────────
 
@@ -361,9 +434,18 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
         return;
       }
 
-      const dateStr    = extractDateFromISO(newDetails.start_time);
-      const durationMs = context.partial_event.duration_ms ?? DEFAULT_DURATION_MS;
-      const start_time = buildChileISO(dateStr, context.partial_event.time);
+      const dateStr = extractDateFromISO(newDetails.start_time);
+
+      // Si el usuario también corrigió la hora en este mensaje, usamos esa
+      // en vez de la hora previamente guardada.
+      const timeStr    = newDetails.time_specified
+        ? extractTimeFromISO(newDetails.start_time)
+        : context.partial_event.time;
+      const durationMs = newDetails.time_specified
+        ? new Date(newDetails.end_time).getTime() - new Date(newDetails.start_time).getTime()
+        : context.partial_event.duration_ms ?? DEFAULT_DURATION_MS;
+
+      const start_time = buildChileISO(dateStr, timeStr);
       const end_time   = addMsToChileISO(start_time, durationMs);
 
       await clearConversation(chatId);
@@ -468,10 +550,11 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
 
       if (intent === 'yes') {
         await clearConversation(chatId);
-        await scheduleEvent(chatId, context.event, calendarId, context.transcription ?? textContent);
+        await scheduleEvent(chatId, context.event, calendarId, context.transcription ?? textContent, context.queue ?? []);
       } else if (intent === 'no') {
         await clearConversation(chatId);
         await sendMessage(chatId, '↩️ Cancelado. No se agendó ningún evento.');
+        await proceedWithQueue(chatId, context, calendarId);
       } else {
         await sendMessage(chatId,
           '🤔 No entendí tu respuesta.\n\n' +
@@ -489,12 +572,12 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
       if (intent === 'slot_1' && free_slots?.[0]) {
         await clearConversation(chatId);
         const chosen = { ...event, start_time: free_slots[0].start, end_time: free_slots[0].end };
-        await scheduleEvent(chatId, chosen, calendarId, context.transcription ?? textContent);
+        await scheduleEvent(chatId, chosen, calendarId, context.transcription ?? textContent, context.queue ?? []);
 
       } else if (intent === 'slot_2' && free_slots?.[1]) {
         await clearConversation(chatId);
         const chosen = { ...event, start_time: free_slots[1].start, end_time: free_slots[1].end };
-        await scheduleEvent(chatId, chosen, calendarId, context.transcription ?? textContent);
+        await scheduleEvent(chatId, chosen, calendarId, context.transcription ?? textContent, context.queue ?? []);
 
       } else if (intent === 'overwrite' && busy_event) {
         await clearConversation(chatId);
@@ -504,16 +587,19 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
           busy_event, calendarId,
           context.transcription ?? textContent,
         );
+        await proceedWithQueue(chatId, context, calendarId);
 
       } else if (intent === 'force') {
         // Agendar igualmente, dejando ambos eventos superpuestos
         await clearConversation(chatId);
         const forcedEvent = { ...event, start_time: requested_start, end_time: requested_end };
         await forceScheduleEvent(chatId, forcedEvent, calendarId, context.transcription ?? textContent);
+        await proceedWithQueue(chatId, context, calendarId);
 
       } else if (intent === 'no') {
         await clearConversation(chatId);
         await sendMessage(chatId, '↩️ Cancelado. No se agendó ningún evento.');
+        await proceedWithQueue(chatId, context, calendarId);
 
       } else {
         let msg =
@@ -542,6 +628,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
           end_time:   context.event_end,
           action:     'cancelled',
         });
+        await setLastEvent(chatId, null);
         await sendMessage(chatId,
           `🗑 <b>Evento cancelado:</b>\n\n` +
           `📌 ${escapeHtml(context.event_summary)}\n` +
@@ -566,31 +653,70 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
 
       if (intent === 'yes') {
         await clearConversation(chatId);
-        const { event_id, event_summary, new_start_time, new_end_time } = context;
-        const updated = await updateCalendarEvent(event_id, calendarId, {
-          start: { dateTime: new_start_time, timeZone: 'America/Santiago' },
-          end:   { dateTime: new_end_time,   timeZone: 'America/Santiago' },
-        });
-        await logEvent(chatId, calendarId, {
-          id:         event_id,
-          summary:    event_summary,
-          start_time: new_start_time,
-          end_time:   new_end_time,
-          transcription: context.transcription ?? '',
-          action:     'moved',
-        });
-        await sendMessage(chatId,
-          `✅ <b>Evento movido:</b>\n\n` +
-          `📌 <b>${escapeHtml(event_summary)}</b>\n` +
-          `📅 ${escapeHtml(formatDateTime(new_start_time))}\n` +
-          `⏱ Hasta las ${escapeHtml(formatTimeOnly(new_end_time))}\n\n` +
-          `<a href="${updated.htmlLink}">👉 Ver en Google Calendar</a>`,
-        );
+        const { event_id, event_summary, new_start_time, new_end_time, transcription } = context;
+        await performMove(chatId, calendarId, { event_id, event_summary, new_start_time, new_end_time, transcription });
       } else if (intent === 'no') {
         await clearConversation(chatId);
         await sendMessage(chatId, '↩️ Cancelado. El evento no fue modificado.');
       } else {
         await sendMessage(chatId, '🤔 Responde <b>"sí"</b> para confirmar el cambio o <b>"no"</b> para cancelar. 🎙️');
+      }
+      break;
+    }
+
+    // ── Esperando elección de horario al mover un evento (conflicto) ────────
+    case 'AWAITING_MOVE_SLOT_CHOICE': {
+      const intent = detectSimpleIntent(textContent);
+      const {
+        event_id, event_summary,
+        requested_start, requested_end, busy_event, free_slots, transcription,
+      } = context;
+
+      if (intent === 'slot_1' || intent === 'slot_2') {
+        const slot = intent === 'slot_1' ? free_slots?.[0] : free_slots?.[1];
+        if (!slot) {
+          await sendMessage(chatId, '🤔 Esa opción no está disponible. Elige otra.');
+          break;
+        }
+        await clearConversation(chatId);
+        await performMove(chatId, calendarId, {
+          event_id, event_summary,
+          new_start_time: slot.start, new_end_time: slot.end,
+          transcription,
+        });
+
+      } else if (intent === 'overwrite') {
+        await clearConversation(chatId);
+        if (busy_event?.id) {
+          await deleteCalendarEvent(busy_event.id, calendarId);
+          await logEvent(chatId, calendarId, {
+            id:      busy_event.id,
+            summary: busy_event.summary ?? '',
+            action:  'cancelled',
+          });
+        }
+        await performMove(chatId, calendarId, {
+          event_id, event_summary,
+          new_start_time: requested_start, new_end_time: requested_end,
+          transcription,
+        });
+
+      } else if (intent === 'force') {
+        await clearConversation(chatId);
+        await performMove(chatId, calendarId, {
+          event_id, event_summary,
+          new_start_time: requested_start, new_end_time: requested_end,
+          transcription,
+        });
+
+      } else if (intent === 'no') {
+        await clearConversation(chatId);
+        await sendMessage(chatId, '↩️ Cancelado. El evento no fue modificado.');
+
+      } else {
+        await sendMessage(chatId,
+          '🤔 No entendí. Responde con el número de una opción (1️⃣, 2️⃣, 3️⃣ o 4️⃣) o <b>"no"</b> para cancelar. 🎙️',
+        );
       }
       break;
     }
@@ -601,7 +727,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
 
       if (intent === 'yes') {
         await clearConversation(chatId);
-        const { event_id, event_summary, event_start, notes, existing_description } = context;
+        const { event_id, event_summary, event_start, event_end, notes, existing_description } = context;
         const newDescription = existing_description
           ? `${existing_description}\n\n${notes}`
           : notes;
@@ -614,6 +740,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
           transcription: notes,
           action:     'noted',
         });
+        await setLastEvent(chatId, { id: event_id, summary: event_summary, start_time: event_start, end_time: event_end });
         await sendMessage(chatId,
           `📝 <b>Nota agregada al evento:</b>\n\n` +
           `📌 <b>${escapeHtml(event_summary)}</b>\n` +
@@ -638,7 +765,8 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
 // ─── Procesamiento de notas de voz (sin estado previo) ────────────────────────
 
 async function processVoiceIntent(chatId, transcription, calendarId) {
-  const eventDetails = await extractEventDetails(transcription);
+  const history = await getRecentEventHistory(chatId).catch(() => []);
+  const eventDetails = await extractEventDetails(transcription, { history });
 
   if (!eventDetails || eventDetails.intent === 'desconocido') {
     await sendMessage(chatId,
@@ -653,9 +781,9 @@ async function processVoiceIntent(chatId, transcription, calendarId) {
   switch (eventDetails.intent) {
     case 'agendar':   await processAgendarIntent(chatId, eventDetails, transcription, calendarId); break;
     case 'consultar': await processConsultarIntent(chatId, eventDetails, calendarId); break;
-    case 'cancelar':  await processCancelarIntent(chatId, eventDetails, calendarId); break;
+    case 'cancelar':  await processCancelarIntent(chatId, eventDetails, transcription, calendarId); break;
     case 'mover':     await processMoverIntent(chatId, eventDetails, transcription, calendarId); break;
-    case 'anotar':    await processAnotarIntent(chatId, eventDetails, calendarId); break;
+    case 'anotar':    await processAnotarIntent(chatId, eventDetails, transcription, calendarId); break;
     default:
       await sendMessage(chatId,
         '❓ No entendí la acción. Puedes:\n' +
@@ -725,32 +853,57 @@ async function processAgendarIntent(chatId, eventDetails, transcription, calenda
     return;
   }
 
+  // Eventos adicionales mencionados en la misma nota de voz, con fecha y hora
+  // completas, se encolan para confirmarlos uno por uno después de este.
+  const queue = (eventDetails.additional_events ?? [])
+    .filter((e) => e.date_specified !== false && e.time_specified !== false && e.start_time && e.end_time)
+    .map((e) => ({
+      summary:    e.summary,
+      start_time: e.start_time,
+      end_time:   e.end_time,
+      notes:      e.notes ?? '',
+    }));
+
   // Tenemos todo — pedir confirmación
   await askForConfirmation(chatId, {
     summary:    eventDetails.summary,
     start_time: eventDetails.start_time,
     end_time:   eventDetails.end_time,
     notes:      eventDetails.notes ?? '',
-  }, calendarId, transcription);
+  }, calendarId, transcription, queue);
 }
 
 // ─── Pedir confirmación antes de agendar ─────────────────────────────────────
 
-async function askForConfirmation(chatId, event, calendarId, transcription) {
-  await saveConversation(chatId, 'AWAITING_CONFIRMATION', { event, calendarId, transcription });
+async function askForConfirmation(chatId, event, calendarId, transcription, queue = []) {
+  await saveConversation(chatId, 'AWAITING_CONFIRMATION', { event, calendarId, transcription, queue });
+
+  const remaining = queue.length > 0 ? `\n\n📋 Quedan ${queue.length} evento(s) más por confirmar después de este.` : '';
 
   await sendMessage(chatId,
     `📋 <b>¿Confirmas este evento?</b>\n\n` +
     `📌 <b>${escapeHtml(event.summary)}</b>\n` +
     `📅 ${escapeHtml(formatDateTime(event.start_time))}\n` +
-    `⏱ Hasta las ${escapeHtml(formatTimeOnly(event.end_time))}\n\n` +
+    `⏱ Hasta las ${escapeHtml(formatTimeOnly(event.end_time))}${remaining}\n\n` +
     `Responde <b>"sí"</b> para agendar o <b>"no"</b> para cancelar 🎙️`,
   );
 }
 
+/**
+ * Tras procesar la confirmación de un evento, si quedan eventos en la cola
+ * (extraídos del mismo mensaje de voz), pide confirmación del siguiente.
+ */
+async function proceedWithQueue(chatId, context, calendarId) {
+  const queue = context.queue ?? [];
+  if (queue.length === 0) return;
+
+  const [next, ...rest] = queue;
+  await askForConfirmation(chatId, next, calendarId, context.transcription, rest);
+}
+
 // ─── Crear evento en calendario (luego de confirmación) ──────────────────────
 
-async function scheduleEvent(chatId, event, calendarId, transcription) {
+async function scheduleEvent(chatId, event, calendarId, transcription, queue = []) {
   const isFree = await checkAvailability(event.start_time, event.end_time, calendarId);
 
   if (isFree) {
@@ -765,6 +918,8 @@ async function scheduleEvent(chatId, event, calendarId, transcription) {
       action:       'created',
     });
 
+    await setLastEvent(chatId, { id: created.id, summary: event.summary, start_time: event.start_time, end_time: event.end_time });
+
     await sendMessage(chatId,
       `✅ <b>¡Listo! Evento agendado:</b>\n\n` +
       `📌 <b>${escapeHtml(event.summary)}</b>\n` +
@@ -772,6 +927,8 @@ async function scheduleEvent(chatId, event, calendarId, transcription) {
       `⏱ Hasta las ${escapeHtml(formatTimeOnly(event.end_time))}\n\n` +
       `<a href="${created.htmlLink}">👉 Ver en Google Calendar</a>`,
     );
+
+    await proceedWithQueue(chatId, { queue, transcription }, calendarId);
 
   } else {
     // Horario ocupado — ofrecer alternativas
@@ -785,6 +942,7 @@ async function scheduleEvent(chatId, event, calendarId, transcription) {
       requested_end:    event.end_time,
       free_slots:       freeSlots,
       transcription,
+      queue,
     });
 
     let msg =
@@ -833,6 +991,8 @@ async function overwriteEvent(chatId, event, slot, busyEvent, calendarId, transc
     action:       'created',
   });
 
+  await setLastEvent(chatId, { id: created.id, summary: event.summary, start_time: slot.start, end_time: slot.end });
+
   await sendMessage(chatId,
     `♻️ <b>¡Evento reemplazado!</b>\n\n` +
     `🗑 Se eliminó: <i>${escapeHtml(busyEvent.summary)}</i>\n` +
@@ -857,6 +1017,8 @@ async function forceScheduleEvent(chatId, event, calendarId, transcription) {
     action:       'created',
   });
 
+  await setLastEvent(chatId, { id: created.id, summary: event.summary, start_time: event.start_time, end_time: event.end_time });
+
   await sendMessage(chatId,
     `✅ <b>¡Evento agendado (horario compartido):</b>\n\n` +
     `📌 <b>${escapeHtml(event.summary)}</b>\n` +
@@ -872,8 +1034,7 @@ async function forceScheduleEvent(chatId, event, calendarId, transcription) {
 async function processConsultarIntent(chatId, eventDetails, calendarId) {
   const refDate  = eventDetails.start_time ? new Date(eventDetails.start_time) : new Date();
   const dateStr  = getChileDateString(refDate);
-  const dayStart = `${dateStr}T00:00:00${CHILE_UTC_OFFSET}`;
-  const dayEnd   = `${dateStr}T23:59:59${CHILE_UTC_OFFSET}`;
+  const { dayStart, dayEnd } = dayBoundsChileISO(dateStr);
 
   const events = await listEvents(dayStart, dayEnd, calendarId);
 
@@ -897,27 +1058,100 @@ async function processConsultarIntent(chatId, eventDetails, calendarId) {
   await sendMessage(chatId, msg.trimEnd());
 }
 
+// ─── Helper: elegir el evento más cercano al horario solicitado ─────────────
+
+/**
+ * De una lista de eventos del mismo día, retorna el que comienza más cerca
+ * del horario de referencia. Evita actuar sobre el primer resultado cuando
+ * hay varios eventos que coinciden con la búsqueda por texto.
+ */
+function pickClosestEvent(events, referenceISO) {
+  if (events.length <= 1) return events[0];
+
+  const refTime = new Date(referenceISO).getTime();
+  return events.reduce((closest, e) => {
+    const eStart = new Date(e.start.dateTime ?? e.start.date).getTime();
+    const closestStart = new Date(closest.start.dateTime ?? closest.start.date).getTime();
+    return Math.abs(eStart - refTime) < Math.abs(closestStart - refTime) ? e : closest;
+  });
+}
+
+// ─── Helper: memoria del último evento referenciado ─────────────────────────
+
+/**
+ * Detecta si el usuario hace referencia a un evento mencionado previamente
+ * en la conversación ("ese", "el anterior", "el que acabo de agendar", etc.)
+ * en vez de describir un evento nuevo por nombre/fecha.
+ */
+function referencesPreviousEvent(text = '') {
+  const t = text.toLowerCase();
+  return /\b(ese|esa|eso|esta|este|el mismo|la misma|anterior|el último|la última|recién agendado|recien agendado|que acabo de|que te dije)\b/.test(t);
+}
+
+/** Convierte la referencia liviana de `last_event` al formato {id, summary, start, end} usado en los flujos. */
+function lastEventToTarget(lastEvent) {
+  if (!lastEvent) return null;
+  return {
+    id:      lastEvent.id,
+    summary: lastEvent.summary,
+    start:   { dateTime: lastEvent.start_time },
+    end:     { dateTime: lastEvent.end_time },
+  };
+}
+
+/** Aplica el cambio de horario de un evento ya confirmado y notifica al usuario. */
+async function performMove(chatId, calendarId, { event_id, event_summary, new_start_time, new_end_time, transcription }) {
+  const updated = await updateCalendarEvent(event_id, calendarId, {
+    start: { dateTime: new_start_time, timeZone: TIMEZONE },
+    end:   { dateTime: new_end_time,   timeZone: TIMEZONE },
+  });
+
+  await logEvent(chatId, calendarId, {
+    id:            event_id,
+    summary:       event_summary,
+    start_time:    new_start_time,
+    end_time:      new_end_time,
+    transcription:  transcription ?? '',
+    action:        'moved',
+  });
+
+  await setLastEvent(chatId, { id: event_id, summary: event_summary, start_time: new_start_time, end_time: new_end_time });
+
+  await sendMessage(chatId,
+    `✅ <b>Evento movido:</b>\n\n` +
+    `📌 <b>${escapeHtml(event_summary)}</b>\n` +
+    `📅 ${escapeHtml(formatDateTime(new_start_time))}\n` +
+    `⏱ Hasta las ${escapeHtml(formatTimeOnly(new_end_time))}\n\n` +
+    `<a href="${updated.htmlLink}">👉 Ver en Google Calendar</a>`,
+  );
+}
+
 // ─── Flujo: cancelar evento ───────────────────────────────────────────────────
 
-async function processCancelarIntent(chatId, eventDetails, calendarId) {
+async function processCancelarIntent(chatId, eventDetails, transcription, calendarId) {
   const refDate  = eventDetails.start_time ? new Date(eventDetails.start_time) : new Date();
   const dateStr  = getChileDateString(refDate);
-  const dayStart = `${dateStr}T00:00:00${CHILE_UTC_OFFSET}`;
-  const dayEnd   = `${dateStr}T23:59:59${CHILE_UTC_OFFSET}`;
+  const { dayStart, dayEnd } = dayBoundsChileISO(dateStr);
 
   // Buscar con la descripción del evento como query para filtrar
   const events = await listEvents(dayStart, dayEnd, calendarId, eventDetails.summary ?? '');
 
-  if (events.length === 0) {
-    await sendMessage(chatId,
-      `🔍 No encontré eventos que coincidan con <i>"${escapeHtml(eventDetails.summary)}"</i> ` +
-      `para el ${formatDateLong(refDate.toISOString())}.\n\n` +
-      `Intenta con otro día o descripción. 🎙️`,
-    );
-    return;
-  }
+  let target;
 
-  if (events.length > 3) {
+  if (events.length === 0) {
+    // Si el usuario se refiere a "ese evento"/"el anterior", probamos con
+    // el último evento que recordamos para este usuario.
+    target = referencesPreviousEvent(transcription) ? lastEventToTarget(await getLastEvent(chatId)) : null;
+
+    if (!target) {
+      await sendMessage(chatId,
+        `🔍 No encontré eventos que coincidan con <i>"${escapeHtml(eventDetails.summary)}"</i> ` +
+        `para el ${formatDateLong(refDate.toISOString())}.\n\n` +
+        `Intenta con otro día o descripción. 🎙️`,
+      );
+      return;
+    }
+  } else if (events.length > 3) {
     // Demasiados resultados — pedir más especificidad
     let msg = `🔍 Encontré varios eventos ese día:\n\n`;
     events.slice(0, 5).forEach((e, i) => {
@@ -926,10 +1160,10 @@ async function processCancelarIntent(chatId, eventDetails, calendarId) {
     msg += `\nEnvíame una nota de voz más específica indicando cuál quieres cancelar. 🎙️`;
     await sendMessage(chatId, msg);
     return;
+  } else {
+    // Elegimos el evento más cercano al horario indicado
+    target = pickClosestEvent(events, eventDetails.start_time);
   }
-
-  // Tomamos el primer resultado (el más próximo al horario indicado)
-  const target = events[0];
 
   await saveConversation(chatId, 'AWAITING_CANCEL_CONFIRM', {
     event_id:      target.id,
@@ -966,24 +1200,68 @@ async function processMoverIntent(chatId, eventDetails, transcription, calendarI
   // Verificar que tengamos la fecha/hora del evento original para buscarlo
   const refDate  = new Date(start_time);
   const dateStr  = getChileDateString(refDate);
-  const dayStart = `${dateStr}T00:00:00${CHILE_UTC_OFFSET}`;
-  const dayEnd   = `${dateStr}T23:59:59${CHILE_UTC_OFFSET}`;
+  const { dayStart, dayEnd } = dayBoundsChileISO(dateStr);
 
   const events = await listEvents(dayStart, dayEnd, calendarId, summary);
 
+  let target;
   if (events.length === 0) {
-    await sendMessage(chatId,
-      `🔍 No encontré <i>"${escapeHtml(summary)}"</i> en ${formatDateLong(start_time)}.\n\n` +
-      `Intenta describiendo mejor el evento o con otra fecha. 🎙️`,
-    );
-    return;
+    // Si el usuario se refiere a "ese evento"/"el anterior", probamos con
+    // el último evento que recordamos para este usuario.
+    target = referencesPreviousEvent(transcription) ? lastEventToTarget(await getLastEvent(chatId)) : null;
+
+    if (!target) {
+      await sendMessage(chatId,
+        `🔍 No encontré <i>"${escapeHtml(summary)}"</i> en ${formatDateLong(start_time)}.\n\n` +
+        `Intenta describiendo mejor el evento o con otra fecha. 🎙️`,
+      );
+      return;
+    }
+  } else {
+    target = pickClosestEvent(events, start_time);
   }
 
-  const target    = events[0];
   const computedEnd = new_end_time ?? addMsToChileISO(
     new_start_time,
     new Date(target.end.dateTime ?? target.end.date) - new Date(target.start.dateTime ?? target.start.date),
   );
+
+  // Verificar si el nuevo horario está disponible antes de confirmar
+  const isFree    = await checkAvailability(new_start_time, computedEnd, calendarId);
+  const busyEvent = isFree ? null : await getBusyEvent(new_start_time, computedEnd, calendarId);
+
+  if (busyEvent && busyEvent.id !== target.id) {
+    const freeSlots = await findNextFreeSlots(new_start_time, 2, calendarId);
+
+    await saveConversation(chatId, 'AWAITING_MOVE_SLOT_CHOICE', {
+      event_id:        target.id,
+      event_summary:   target.summary ?? summary,
+      original_start:  target.start.dateTime ?? target.start.date,
+      original_end:    target.end.dateTime   ?? target.end.date,
+      requested_start: new_start_time,
+      requested_end:   computedEnd,
+      busy_event:      busyEvent,
+      free_slots:      freeSlots,
+      transcription,
+    });
+
+    let msg =
+      `⚠️ <b>El nuevo horario está ocupado:</b>\n` +
+      `🚫 ${escapeHtml(formatDateTime(new_start_time))} — ${escapeHtml(formatTimeOnly(computedEnd))}\n` +
+      `📌 Hay: <i>${escapeHtml(busyEvent.summary)}</i>\n\n` +
+      `<b>Elige una opción para mover <i>${escapeHtml(target.summary ?? summary)}</i>:</b>\n\n`;
+
+    freeSlots.forEach((slot, i) => {
+      const emoji = i === 0 ? '1️⃣' : '2️⃣';
+      msg += `${emoji} ${escapeHtml(formatDateTime(slot.start))} — ${escapeHtml(formatTimeOnly(slot.end))}\n`;
+    });
+    msg += `3️⃣ Reemplazar <i>${escapeHtml(busyEvent.summary)}</i>\n`;
+    msg += `4️⃣ Mover de todas formas (quedarán simultáneos)\n`;
+    msg += `\nResponde con tu elección o <b>"no"</b> para cancelar 🎙️`;
+
+    await sendMessage(chatId, msg);
+    return;
+  }
 
   await saveConversation(chatId, 'AWAITING_MOVE_CONFIRM', {
     event_id:       target.id,
@@ -1006,7 +1284,7 @@ async function processMoverIntent(chatId, eventDetails, transcription, calendarI
 
 // ─── Flujo: agregar nota a evento ─────────────────────────────────────────────
 
-async function processAnotarIntent(chatId, eventDetails, calendarId) {
+async function processAnotarIntent(chatId, eventDetails, transcription, calendarId) {
   const { summary, start_time, notes } = eventDetails;
 
   if (!notes || notes.trim() === '') {
@@ -1020,25 +1298,32 @@ async function processAnotarIntent(chatId, eventDetails, calendarId) {
 
   const refDate  = new Date(start_time);
   const dateStr  = getChileDateString(refDate);
-  const dayStart = `${dateStr}T00:00:00${CHILE_UTC_OFFSET}`;
-  const dayEnd   = `${dateStr}T23:59:59${CHILE_UTC_OFFSET}`;
+  const { dayStart, dayEnd } = dayBoundsChileISO(dateStr);
 
   const events = await listEvents(dayStart, dayEnd, calendarId, summary);
 
+  let target;
   if (events.length === 0) {
-    await sendMessage(chatId,
-      `🔍 No encontré <i>"${escapeHtml(summary)}"</i> en ${formatDateLong(start_time)}.\n\n` +
-      `Intenta con otra descripción o fecha. 🎙️`,
-    );
-    return;
-  }
+    // Si el usuario se refiere a "ese evento"/"el anterior", probamos con
+    // el último evento que recordamos para este usuario.
+    target = referencesPreviousEvent(transcription) ? lastEventToTarget(await getLastEvent(chatId)) : null;
 
-  const target = events[0];
+    if (!target) {
+      await sendMessage(chatId,
+        `🔍 No encontré <i>"${escapeHtml(summary)}"</i> en ${formatDateLong(start_time)}.\n\n` +
+        `Intenta con otra descripción o fecha. 🎙️`,
+      );
+      return;
+    }
+  } else {
+    target = pickClosestEvent(events, start_time);
+  }
 
   await saveConversation(chatId, 'AWAITING_NOTE_CONFIRM', {
     event_id:            target.id,
     event_summary:       target.summary ?? summary,
     event_start:         target.start.dateTime ?? target.start.date,
+    event_end:           target.end.dateTime   ?? target.end.date,
     notes,
     existing_description: target.description ?? '',
   });
@@ -1111,7 +1396,7 @@ async function handleTextCommands(chatId, text, calendarId) {
   if (lower === '/hoy') {
     const today = new Date();
     const dateStr  = getChileDateString(today);
-    const fakeEventDetails = { start_time: `${dateStr}T12:00:00${CHILE_UTC_OFFSET}` };
+    const fakeEventDetails = { start_time: buildChileISO(dateStr, '12:00') };
     await processConsultarIntent(chatId, fakeEventDetails, calendarId);
     return;
   }

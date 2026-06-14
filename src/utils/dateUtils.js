@@ -46,15 +46,35 @@ export function formatTimeOnly(isoString) {
 }
 
 /**
- * Convierte un Date de UTC a un ISO 8601 con offset explícito de Chile (-04:00).
+ * Calcula el offset UTC vigente para Chile en una fecha dada,
+ * detectando automáticamente horario de verano (UTC-3) o invierno (UTC-4).
+ *
+ * @param {Date} [date] - Fecha de referencia (por defecto, ahora).
+ * @returns {string}    - "-03:00" o "-04:00"
+ */
+export function getChileOffsetString(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: TIMEZONE,
+    timeZoneName: 'shortOffset',
+  }).formatToParts(date);
+  const tzName = parts.find((p) => p.type === 'timeZoneName')?.value ?? 'GMT-4';
+  const match = tzName.match(/GMT([+-]\d+)/);
+  const hours = match ? parseInt(match[1], 10) : -4;
+  const sign = hours < 0 ? '-' : '+';
+  return `${sign}${String(Math.abs(hours)).padStart(2, '0')}:00`;
+}
+
+/**
+ * Convierte un Date de UTC a un ISO 8601 con offset explícito de Chile,
+ * detectando automáticamente horario de verano/invierno.
  * Útil para pasar tiempos a la API de Google Calendar de forma legible.
  */
 export function toChileISO(date) {
-  const OFFSET_HOURS = -4;
-  const localMs = date.getTime() + OFFSET_HOURS * 3600 * 1000;
-  const localDate = new Date(localMs);
-  const iso = localDate.toISOString().replace('Z', '-04:00');
-  return iso;
+  const offsetStr   = getChileOffsetString(date);
+  const offsetHours = parseInt(offsetStr.slice(0, 3), 10);
+  const localMs     = date.getTime() + offsetHours * 3600 * 1000;
+  const localDate   = new Date(localMs);
+  return localDate.toISOString().replace('Z', offsetStr);
 }
 
 /**
@@ -94,20 +114,47 @@ export function extractTimeFromISO(isoString) {
 }
 
 /**
- * Construye un ISO string para Chile (-04:00) combinando una fecha y una hora.
+ * Construye un ISO string para Chile (offset detectado según temporada) combinando una fecha y una hora.
  *
  * @param {string} dateStr - "YYYY-MM-DD"
  * @param {string} timeStr - "HH:MM"
- * @returns {string}       - "YYYY-MM-DDTHH:MM:00-04:00"
+ * @returns {string}       - "YYYY-MM-DDTHH:MM:00-04:00" o "-03:00" según corresponda
  */
 export function buildChileISO(dateStr, timeStr) {
-  return `${dateStr}T${timeStr}:00-04:00`;
+  const offsetStr = getChileOffsetString(new Date(`${dateStr}T12:00:00Z`));
+  return `${dateStr}T${timeStr}:00${offsetStr}`;
 }
 
 /**
- * Retorna un ISO string con offset Chile (-04:00) sumando milisegundos a otro ISO.
+ * Retorna un ISO string con offset Chile (según temporada) sumando milisegundos a otro ISO.
  */
 export function addMsToChileISO(isoString, ms) {
   const newDate = new Date(new Date(isoString).getTime() + ms);
   return toChileISO(newDate);
+}
+
+/**
+ * Re-normaliza un ISO string para que use el offset correcto de Chile según
+ * la fecha que contiene, sin modificar la fecha/hora local indicada.
+ * Corrige offsets incorrectos (e.g. -04:00 generados en horario de verano).
+ */
+export function normalizeToChileISO(isoString) {
+  const dateStr = isoString.slice(0, 10);
+  const timeStr = isoString.slice(11, 16);
+  return buildChileISO(dateStr, timeStr);
+}
+
+/**
+ * Retorna el inicio y fin de un día completo en hora de Chile,
+ * con el offset correcto según la temporada de esa fecha.
+ *
+ * @param {string} dateStr - "YYYY-MM-DD"
+ * @returns {{dayStart: string, dayEnd: string}}
+ */
+export function dayBoundsChileISO(dateStr) {
+  const offsetStr = getChileOffsetString(new Date(`${dateStr}T12:00:00Z`));
+  return {
+    dayStart: `${dateStr}T00:00:00${offsetStr}`,
+    dayEnd:   `${dateStr}T23:59:59${offsetStr}`,
+  };
 }

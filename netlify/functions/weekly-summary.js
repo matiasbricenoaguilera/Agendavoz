@@ -14,11 +14,10 @@ loadEnv({ path: resolve(process.cwd(), '.env') });
 import { sendMessage }      from '../../src/services/telegram.js';
 import { listEvents }        from '../../src/services/calendar.js';
 import { getAllActiveUsers }  from '../../src/services/supabase.js';
-import { formatTimeOnly, getChileDateString } from '../../src/utils/dateUtils.js';
+import { formatTimeOnly, getChileDateString, dayBoundsChileISO } from '../../src/utils/dateUtils.js';
 import { logger } from '../../src/utils/logger.js';
 
-const TIMEZONE         = 'America/Santiago';
-const CHILE_UTC_OFFSET = '-04:00';
+const TIMEZONE = 'America/Santiago';
 
 export const handler = async () => {
   logger.info('Iniciando resumen semanal');
@@ -31,8 +30,8 @@ export const handler = async () => {
   const daysToMonday = dayOfWeek === 0 ? 1 : 8 - dayOfWeek;
   const monday       = new Date(now.getTime() + daysToMonday * 24 * 60 * 60 * 1000);
   const sunday       = new Date(monday.getTime() + 6 * 24 * 60 * 60 * 1000);
-  const weekStart    = `${getChileDateString(monday)}T00:00:00${CHILE_UTC_OFFSET}`;
-  const weekEnd      = `${getChileDateString(sunday)}T23:59:59${CHILE_UTC_OFFSET}`;
+  const weekStart    = dayBoundsChileISO(getChileDateString(monday)).dayStart;
+  const weekEnd      = dayBoundsChileISO(getChileDateString(sunday)).dayEnd;
   const mondayLabel  = monday.toLocaleDateString('es-CL', { timeZone: TIMEZONE, day: 'numeric', month: 'long' });
   const sundayLabel  = sunday.toLocaleDateString('es-CL', { timeZone: TIMEZONE, day: 'numeric', month: 'long' });
 

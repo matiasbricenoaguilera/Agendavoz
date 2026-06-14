@@ -4,7 +4,7 @@
  * Corre cada 15 minutos. Busca eventos que comiencen en los próximos 20–45 minutos
  * y envía un recordatorio si aún no se ha enviado (deduplicación en Supabase).
  *
- * netlify.toml: schedule = "*/15 * * * *"
+ * netlify.toml: schedule = "* /15 * * * *" (sin el espacio: cada 15 minutos)
  */
 
 import { resolve } from 'path';
@@ -58,7 +58,14 @@ export const handler = async () => {
           (event.description ? `📝 ${escapeHtml(event.description.slice(0, 120))}\n` : '') +
           `\n¡Prepárate! 🎯`;
 
-        await sendMessage(chatId, msg);
+        await sendMessage(chatId, msg, {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '✅ Ok',              callback_data: `ok:${event.id}` },
+              { text: '⏰ Posponer 15 min', callback_data: `postpone15:${event.id}` },
+            ]],
+          },
+        });
         await markReminderSent(chatId, event.id, eventDate);
         logger.info('Recordatorio enviado', { chatId, eventId: event.id, summary: event.summary });
       }

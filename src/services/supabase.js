@@ -168,7 +168,7 @@ export async function getConversation(telegramId) {
     .from('conversations')
     .select('*')
     .eq('telegram_id', String(telegramId))
-    .single();
+    .maybeSingle();
 
   if (error || !data) return null;
 
@@ -269,6 +269,36 @@ export async function cleanOldReminders() {
   await sb.from('reminders').delete().lt('sent_at', cutoff);
 }
 
+// ─── Memoria del último evento referenciado ──────────────────────────────────
+
+/**
+ * Retorna la referencia ligera al último evento creado/encontrado/movido
+ * por el usuario, o null si no hay ninguna guardada.
+ *
+ * @param {string|number} telegramId
+ * @returns {Promise<{id: string, summary: string, start_time: string, end_time: string}|null>}
+ */
+export async function getLastEvent(telegramId) {
+  const sb = getClient();
+  const { data } = await sb
+    .from('users')
+    .select('last_event')
+    .eq('telegram_id', String(telegramId))
+    .maybeSingle();
+  return data?.last_event ?? null;
+}
+
+/**
+ * Guarda la referencia al último evento con el que interactuó el usuario.
+ * Pasa `null` para limpiarla (e.g. tras cancelar el evento).
+ *
+ * @param {string|number} telegramId
+ * @param {{id: string, summary: string, start_time: string, end_time: string}|null} eventRef
+ */
+export async function setLastEvent(telegramId, eventRef) {
+  await updateUser(telegramId, { last_event: eventRef });
+}
+
 // ─── Historial de eventos ─────────────────────────────────────────────────────
 
 /**
@@ -299,4 +329,27 @@ export async function logEvent(telegramId, calendarId, eventData) {
 
   if (error) logger.error('Error guardando log en Supabase', { error: error.message });
   else logger.info('Evento registrado en historial', { telegramId, action: eventData.action, summary: eventData.summary });
+}
+
+/**
+ * Retorna los eventos creados/movidos más recientes de un usuario, para
+ * darle contexto al NLU sobre sus horarios habituales (e.g. "gimnasio"
+ * siempre a las 07:00).
+ *
+ * @param {string|number} telegramId
+ * @param {number} [limit]
+ * @returns {Promise<Array<{summary: string, start_time: string}>>}
+ */
+export async function getRecentEventHistory(telegramId, limit = 15) {
+  const sb = getClient();
+  const { data } = await sb
+    .from('event_log')
+    .select('summary, start_time')
+    .eq('telegram_id', String(telegramId))
+    .in('action', ['created', 'moved'])
+    .not('start_time', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  return data ?? [];
 }

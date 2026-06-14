@@ -27,6 +27,24 @@ export async function sendMessage(chatId, text, extraOptions = {}) {
 }
 
 /**
+ * Responde a un callback de un botón inline (quita el "reloj" de carga en
+ * el cliente de Telegram y opcionalmente muestra un toast).
+ *
+ * @param {string} callbackQueryId
+ * @param {string} [text]  - Texto del toast a mostrar (opcional).
+ * @param {object} [extraOptions] - Opciones adicionales (e.g. show_alert).
+ */
+export async function answerCallbackQuery(callbackQueryId, text = '', extraOptions = {}) {
+  const payload = {
+    callback_query_id: callbackQueryId,
+    text,
+    ...extraOptions,
+  };
+  const response = await axios.post(getApiUrl('answerCallbackQuery'), payload);
+  return response.data;
+}
+
+/**
  * Muestra el indicador "escribiendo..." en el chat.
  * No es crítico; los errores se silencian para no interrumpir el flujo.
  */

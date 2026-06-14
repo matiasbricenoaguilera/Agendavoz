@@ -17,12 +17,11 @@ import { sendMessage }      from '../../src/services/telegram.js';
 import { listEvents }        from '../../src/services/calendar.js';
 import { getAllActiveUsers }  from '../../src/services/supabase.js';
 import {
-  formatTimeOnly, getChileDateString,
+  formatTimeOnly, getChileDateString, dayBoundsChileISO,
 } from '../../src/utils/dateUtils.js';
 import { logger } from '../../src/utils/logger.js';
 
-const TIMEZONE         = 'America/Santiago';
-const CHILE_UTC_OFFSET = '-04:00';
+const TIMEZONE = 'America/Santiago';
 
 export const handler = async () => {
   logger.info('Iniciando envío de resumen diario');
@@ -32,8 +31,7 @@ export const handler = async () => {
 
   const today   = new Date();
   const dateStr = getChileDateString(today);
-  const dayStart = `${dateStr}T00:00:00${CHILE_UTC_OFFSET}`;
-  const dayEnd   = `${dateStr}T23:59:59${CHILE_UTC_OFFSET}`;
+  const { dayStart, dayEnd } = dayBoundsChileISO(dateStr);
   const dayLabel = today.toLocaleDateString('es-CL', { timeZone: TIMEZONE, weekday: 'long', day: 'numeric', month: 'long' });
 
   for (const { chatId, calendarId, morningSummary } of users) {
