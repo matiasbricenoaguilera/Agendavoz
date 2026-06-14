@@ -75,7 +75,7 @@ See `.env.example` for the full list with descriptions. Required (checked at run
 
 ### Database schema
 
-`supabase/schema.sql` is the base schema; `migration_v2.sql` through `migration_v6.sql` are incremental migrations — apply in order for existing projects. Notably: v2 adds `reminders`/`event_log` action types (`moved`/`noted`) and the `users` table; v4 adds `users.last_event` (memory for "ese evento"/"muévelo" references); v5 adds the `edited` action and `conversations.nudged` (pending-confirmation nudges); v6 adds `event_log.category`.
+`supabase/schema.sql` is the base schema; `migration_v2.sql` through `migration_v7.sql` are incremental migrations — apply in order for existing projects. Notably: v2 adds `reminders`/`event_log` action types (`moved`/`noted`) and the `users` table; v4 adds `users.last_event` (memory for "ese evento"/"muévelo" references); v5 adds the `edited` action and `conversations.nudged` (pending-confirmation nudges); v6 adds `event_log.category`; v7 adds the `api_usage` table (per-call OpenAI cost tracking — tokens for GPT-4o-mini, audio seconds for Whisper — surfaced in the admin panel's "Consumo IA" tab).
 
 ### Timezone handling
 
