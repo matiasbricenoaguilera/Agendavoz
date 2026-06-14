@@ -79,6 +79,26 @@ async function getCalendarForUser(chatId) {
   return getCalendarFromEnv(chatId);
 }
 
+/**
+ * Traduce un error no manejado a un mensaje claro para el usuario,
+ * distinguiendo si vino de Google Calendar, de OpenAI, o es desconocido.
+ */
+function getFriendlyErrorMessage(err) {
+  const status = err.status ?? err.code ?? err.response?.status;
+  const url    = err.config?.url ?? err.response?.config?.url ?? '';
+
+  if (typeof url === 'string' && url.includes('googleapis.com/calendar')) {
+    return '❌ No pude conectar con tu Google Calendar. Intenta de nuevo en unos momentos.';
+  }
+  if (err.name === 'APIError' || err.constructor?.name?.includes('OpenAI')) {
+    return '❌ El asistente de IA no está disponible en este momento. Intenta de nuevo en unos momentos.';
+  }
+  if (status === 429) {
+    return '❌ Estamos recibiendo muchas solicitudes. Intenta de nuevo en un momento.';
+  }
+  return '❌ Ocurrió un error inesperado. Intenta de nuevo en unos momentos.';
+}
+
 // ─── Handler principal ────────────────────────────────────────────────────────
 
 export const handler = async (event) => {
@@ -146,7 +166,7 @@ export const handler = async (event) => {
   } catch (err) {
     logger.error('Error no manejado', err);
     if (chatId) {
-      await sendMessage(chatId, '❌ Ocurrió un error inesperado. Intenta de nuevo en unos momentos.').catch(() => {});
+      await sendMessage(chatId, getFriendlyErrorMessage(err)).catch(() => {});
     }
   }
 

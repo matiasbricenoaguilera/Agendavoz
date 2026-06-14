@@ -8,6 +8,7 @@
 import OpenAI, { toFile } from 'openai';
 import { logger } from '../utils/logger.js';
 import { getChileOffsetString, normalizeToChileISO } from '../utils/dateUtils.js';
+import { withRetry } from '../utils/retry.js';
 
 const MODEL_NLU = 'gpt-4o-mini';
 const MODEL_STT = 'whisper-1';
@@ -66,11 +67,11 @@ export async function transcribeAudio(audioBuffer, mimeType) {
 
   const file = await toFile(audioBuffer, `audio.${ext}`, { type: mimeType });
 
-  const response = await client.audio.transcriptions.create({
+  const response = await withRetry(() => client.audio.transcriptions.create({
     model:    MODEL_STT,
     file,
     language: 'es',
-  });
+  }), { label: 'transcribeAudio' });
 
   const transcription = response.text?.trim() ?? '';
   logger.info('Transcripción completada', { transcription });
@@ -209,7 +210,7 @@ Eventos múltiples (solo para intent "agendar"):
   evento adicional le falta fecha u hora, ignóralo (no lo incluyas).
 `.trim();
 
-  const response = await client.chat.completions.create({
+  const response = await withRetry(() => client.chat.completions.create({
     model:           MODEL_NLU,
     temperature:     0.1,
     response_format: { type: 'json_object' },
@@ -217,7 +218,7 @@ Eventos múltiples (solo para intent "agendar"):
       { role: 'system', content: systemPrompt },
       { role: 'user',   content: `Texto del usuario: "${transcription}"` },
     ],
-  });
+  }), { label: 'extractEventDetails' });
 
   const rawText = response.choices[0]?.message?.content ?? '{}';
   const details = JSON.parse(rawText);

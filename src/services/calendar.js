@@ -7,6 +7,7 @@
 import { google } from 'googleapis';
 import { logger } from '../utils/logger.js';
 import { getChileDateString, getChileOffsetString } from '../utils/dateUtils.js';
+import { withRetry } from '../utils/retry.js';
 
 const TIMEZONE          = 'America/Santiago';
 const EVENT_DURATION_MS = 60 * 60 * 1000;     // 1 hora
@@ -101,7 +102,7 @@ export async function listEvents(startTime, endTime, calendarId, query = '') {
   };
   if (query) params.q = query;
 
-  const response = await calendar.events.list(params);
+  const response = await withRetry(() => calendar.events.list(params), { label: 'listEvents' });
   const items = response.data.items ?? [];
   logger.info('Eventos listados', { cantidad: items.length, startTime, endTime });
   return items;
@@ -119,13 +120,13 @@ export async function listEvents(startTime, endTime, calendarId, query = '') {
 export async function getBusyEvent(startTime, endTime, calendarId) {
   const calendar = getCalendarClient();
 
-  const response = await calendar.events.list({
+  const response = await withRetry(() => calendar.events.list({
     calendarId,
     timeMin:      startTime,
     timeMax:      endTime,
     singleEvents: true,
     orderBy:      'startTime',
-  });
+  }), { label: 'getBusyEvent' });
 
   const first = (response.data.items ?? [])[0];
   if (!first) return null;
@@ -148,7 +149,7 @@ export async function getBusyEvent(startTime, endTime, calendarId) {
 export async function getEventById(eventId, calendarId) {
   const calendar = getCalendarClient();
   try {
-    const response = await calendar.events.get({ calendarId, eventId });
+    const response = await withRetry(() => calendar.events.get({ calendarId, eventId }), { label: 'getEventById' });
     return response.data;
   } catch (err) {
     if (err.code === 404 || err.response?.status === 404) return null;
@@ -197,13 +198,13 @@ export async function updateCalendarEvent(eventId, calendarId, updates) {
 export async function checkAvailability(startTime, endTime, calendarId) {
   const calendar = getCalendarClient();
 
-  const response = await calendar.events.list({
+  const response = await withRetry(() => calendar.events.list({
     calendarId,
     timeMin:     startTime,
     timeMax:     endTime,
     singleEvents: true,
     orderBy:     'startTime',
-  });
+  }), { label: 'checkAvailability' });
 
   const events  = response.data.items ?? [];
   const isFree  = events.length === 0;
@@ -263,13 +264,13 @@ export async function findNextFreeSlots(referenceStartTime, count = 2, calendarI
     return findSlotsNextDay(calendar, refDate, count, calendarId);
   }
 
-  const response = await calendar.events.list({
+  const response = await withRetry(() => calendar.events.list({
     calendarId,
     timeMin:      cursor.toISOString(),
     timeMax:      dayEnd.toISOString(),
     singleEvents: true,
     orderBy:      'startTime',
-  });
+  }), { label: 'findNextFreeSlots' });
 
   const events = (response.data.items ?? []).map((e) => ({
     start: new Date(e.start.dateTime ?? e.start.date),
@@ -323,13 +324,13 @@ async function findSlotsNextDay(calendar, refDate, count, calendarId) {
   const startISO = makeChileISO(tomorrow, 9);  // 09:00 del día siguiente
   const endISO   = makeChileISO(tomorrow, WORKDAY_END_H);
 
-  const response = await calendar.events.list({
+  const response = await withRetry(() => calendar.events.list({
     calendarId,
     timeMin:      startISO,
     timeMax:      endISO,
     singleEvents: true,
     orderBy:      'startTime',
-  });
+  }), { label: 'findSlotsNextDay' });
 
   const events = (response.data.items ?? []).map((e) => ({
     start: new Date(e.start.dateTime ?? e.start.date),

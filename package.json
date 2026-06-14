@@ -12,6 +12,7 @@
     "deploy:preview": "netlify deploy",
     "test:local": "node --env-file=.env tests/test-local.js",
     "test:mock-voice": "node --env-file=.env tests/test-local.js --voice",
+    "test:nlu": "node --env-file=.env tests/test-nlu-suite.js",
     "logs": "netlify functions:log telegram-bot"
   },
   "dependencies": {
