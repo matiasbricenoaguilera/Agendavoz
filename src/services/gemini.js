@@ -9,9 +9,21 @@ import OpenAI, { toFile } from 'openai';
 import { logger } from '../utils/logger.js';
 import { getChileOffsetString, normalizeToChileISO } from '../utils/dateUtils.js';
 import { withRetry } from '../utils/retry.js';
+import { logApiUsage } from './supabase.js';
 
 const MODEL_NLU = 'gpt-4o-mini';
 const MODEL_STT = 'whisper-1';
+
+// Precios estimados de OpenAI (USD), para estimar costos en el dashboard de
+// administración. Actualizar manualmente si OpenAI cambia sus tarifas.
+const PRICING = {
+  'gpt-4o-mini': { perMTokIn: 0.150, perMTokOut: 0.600 },
+  'whisper-1':   { perMinute: 0.006 },
+};
+
+function registerUsage(usage) {
+  logApiUsage(usage).catch((err) => logger.error('Error registrando consumo de API', { error: err.message }));
+}
 
 function getClient() {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -49,11 +61,12 @@ function buildDateContext() {
 /**
  * Transcribe un Buffer de audio usando OpenAI Whisper.
  *
- * @param {Buffer} audioBuffer - Bytes del archivo de audio.
- * @param {string} mimeType    - MIME type (e.g. 'audio/ogg').
- * @returns {Promise<string>}  - Texto transcrito en español.
+ * @param {Buffer} audioBuffer  - Bytes del archivo de audio.
+ * @param {string} mimeType     - MIME type (e.g. 'audio/ogg').
+ * @param {string|number} [chatId] - ID de Telegram del usuario, para registrar el consumo.
+ * @returns {Promise<string>}   - Texto transcrito en español.
  */
-export async function transcribeAudio(audioBuffer, mimeType) {
+export async function transcribeAudio(audioBuffer, mimeType, chatId) {
   const client = getClient();
 
   // Mapear MIME type a extensión para que Whisper identifique el formato
@@ -68,13 +81,26 @@ export async function transcribeAudio(audioBuffer, mimeType) {
   const file = await toFile(audioBuffer, `audio.${ext}`, { type: mimeType });
 
   const response = await withRetry(() => client.audio.transcriptions.create({
-    model:    MODEL_STT,
+    model:           MODEL_STT,
     file,
-    language: 'es',
+    language:        'es',
+    response_format: 'verbose_json',
   }), { label: 'transcribeAudio' });
 
   const transcription = response.text?.trim() ?? '';
   logger.info('Transcripción completada', { transcription });
+
+  const audioSeconds = response.duration ?? null;
+  if (audioSeconds != null) {
+    registerUsage({
+      telegramId: chatId,
+      model:      MODEL_STT,
+      kind:       'stt',
+      audioSeconds,
+      costUsd:    (audioSeconds / 60) * PRICING['whisper-1'].perMinute,
+    });
+  }
+
   return transcription;
 }
 
@@ -114,6 +140,7 @@ function extractTimeForHistory(isoString) {
  * @param {string} transcription - Texto con la petición del usuario.
  * @param {object} [options]
  * @param {Array<{summary: string, start_time: string}>} [options.history] - Historial reciente del usuario.
+ * @param {string|number} [options.chatId] - ID de Telegram del usuario, para registrar el consumo.
  * @returns {Promise<EventDetails>}
  *
  * @typedef {Object} EventDetails
@@ -222,6 +249,20 @@ Eventos múltiples (solo para intent "agendar"):
 
   const rawText = response.choices[0]?.message?.content ?? '{}';
   const details = JSON.parse(rawText);
+
+  const tokensIn  = response.usage?.prompt_tokens ?? null;
+  const tokensOut = response.usage?.completion_tokens ?? null;
+  if (tokensIn != null || tokensOut != null) {
+    registerUsage({
+      telegramId: options.chatId,
+      model:      MODEL_NLU,
+      kind:       'chat',
+      tokensIn,
+      tokensOut,
+      costUsd:    ((tokensIn ?? 0) / 1_000_000) * PRICING['gpt-4o-mini'].perMTokIn
+                 + ((tokensOut ?? 0) / 1_000_000) * PRICING['gpt-4o-mini'].perMTokOut,
+    });
+  }
 
   // El modelo siempre responde con offset -04:00; lo normalizamos al offset
   // real de Chile para esa fecha (puede ser -03:00 en horario de verano).

@@ -381,6 +381,34 @@ export async function logEvent(telegramId, calendarId, eventData) {
 }
 
 /**
+ * Registra el consumo de una llamada a la API de OpenAI (chat o STT),
+ * para poder estimar costos por usuario en el panel de administración.
+ *
+ * @param {object} usage
+ * @param {string|number} [usage.telegramId]
+ * @param {string} usage.model
+ * @param {'chat'|'stt'} usage.kind
+ * @param {number} [usage.tokensIn]
+ * @param {number} [usage.tokensOut]
+ * @param {number} [usage.audioSeconds]
+ * @param {number} usage.costUsd
+ */
+export async function logApiUsage({ telegramId, model, kind, tokensIn = null, tokensOut = null, audioSeconds = null, costUsd }) {
+  const sb = getClient();
+  const { error } = await sb.from('api_usage').insert({
+    telegram_id:   telegramId != null ? String(telegramId) : null,
+    model,
+    kind,
+    tokens_in:     tokensIn,
+    tokens_out:    tokensOut,
+    audio_seconds: audioSeconds,
+    cost_usd:      costUsd,
+  });
+
+  if (error) logger.error('Error guardando consumo de API en Supabase', { error: error.message });
+}
+
+/**
  * Retorna los eventos creados/movidos más recientes de un usuario, para
  * darle contexto al NLU sobre sus horarios habituales (e.g. "gimnasio"
  * siempre a las 07:00).

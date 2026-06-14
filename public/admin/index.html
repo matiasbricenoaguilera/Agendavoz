@@ -144,6 +144,9 @@
         <button class="nav-btn" onclick="showSection('history')" id="btn-history">
           <span class="nav-icon">📋</span> Historial
         </button>
+        <button class="nav-btn" onclick="showSection('usage')" id="btn-usage">
+          <span class="nav-icon">💸</span> Consumo IA
+        </button>
       </nav>
       <div class="sidebar-footer">v2.2 · agendavoz.netlify.app</div>
     </aside>
@@ -219,6 +222,30 @@
               <thead>
                 <tr><th>Usuario</th><th>Evento</th><th>Acción</th><th>Inicio</th><th>Transcripción</th><th>Fecha</th></tr>
               </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Consumo IA -->
+      <section class="section" id="sec-usage">
+        <div class="page-header">
+          <h1>Consumo de IA</h1>
+          <p>Estimación de costos de OpenAI (Whisper + GPT-4o-mini) — últimos 30 días</p>
+        </div>
+        <div class="stats-grid" id="usageStatsGrid">
+          <div class="loading">Cargando...</div>
+        </div>
+        <div class="card" style="margin-bottom:1.5rem">
+          <h3 style="margin-bottom:1rem;font-size:1rem">Costo por día (USD)</h3>
+          <div id="usageDailyChart" style="display:flex;align-items:flex-end;gap:4px;height:120px"></div>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:1rem;font-size:1rem">Costo por usuario</h3>
+          <div class="table-wrap">
+            <table id="usageUsersTable">
+              <thead><tr><th>Usuario</th><th>Costo estimado (USD)</th></tr></thead>
               <tbody></tbody>
             </table>
           </div>
@@ -311,6 +338,7 @@ function showSection(name) {
   document.getElementById(`sec-${name}`).classList.add('active');
   document.getElementById(`btn-${name}`).classList.add('active');
   if (name === 'history') loadHistory();
+  if (name === 'usage') loadUsage();
 }
 
 // ── Load all ──────────────────────────────────────────────────────────────────
@@ -392,6 +420,40 @@ async function loadHistory() {
       <td style="font-size:.78rem;color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.transcription ?? '')}">${esc(e.transcription ?? '—')}</td>
       <td>${fmtDate(e.created_at)}</td>
     </tr>`).join('');
+}
+
+async function loadUsage() {
+  const res  = await api(`${API}?action=usage`);
+  const data = await res.json();
+
+  document.getElementById('usageStatsGrid').innerHTML = `
+    <div class="stat-card green"><div class="label">Costo hoy</div><div class="value">$${data.costToday.toFixed(3)}</div></div>
+    <div class="stat-card blue"><div class="label">Costo este mes</div><div class="value">$${data.costMonth.toFixed(2)}</div></div>
+    <div class="stat-card"><div class="label">Tokens (30 días)</div><div class="value">${data.totalTokens.toLocaleString('es-CL')}</div></div>
+    <div class="stat-card yellow"><div class="label">Minutos de audio</div><div class="value">${data.totalAudioMinutes.toFixed(1)}</div></div>
+  `;
+
+  const chart = document.getElementById('usageDailyChart');
+  if (!data.dailyCosts.length) {
+    chart.innerHTML = '<div class="empty">Sin datos de consumo todavía</div>';
+  } else {
+    const max = Math.max(...data.dailyCosts.map(d => d.costUsd), 0.0001);
+    chart.innerHTML = data.dailyCosts.map(d => {
+      const h = Math.max(2, Math.round((d.costUsd / max) * 100));
+      return `<div title="${d.day}: $${d.costUsd.toFixed(4)}" style="flex:1;background:var(--primary);border-radius:3px 3px 0 0;height:${h}px" ></div>`;
+    }).join('');
+  }
+
+  const tbody = document.querySelector('#usageUsersTable tbody');
+  if (!data.topUsers.length) {
+    tbody.innerHTML = '<tr><td colspan="2" class="empty">Sin datos de consumo todavía</td></tr>';
+  } else {
+    tbody.innerHTML = data.topUsers.map(u => `
+      <tr>
+        <td>${getUserName(u.telegramId)}</td>
+        <td>$${u.costUsd.toFixed(4)}</td>
+      </tr>`).join('');
+  }
 }
 
 // ── User actions ──────────────────────────────────────────────────────────────

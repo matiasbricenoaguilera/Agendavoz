@@ -406,7 +406,7 @@ async function processMessage(message, calendarId) {
     const { buffer, mimeType } = await downloadFile(fileData.file_id);
 
     await sendMessage(chatId, '🧠 Transcribiendo con IA...');
-    textContent = await transcribeAudio(buffer, mimeType);
+    textContent = await transcribeAudio(buffer, mimeType, chatId);
 
     if (!textContent) {
       await sendMessage(chatId, '⚠️ No pude entender el audio. ¿Puedes intentarlo de nuevo?');
@@ -444,7 +444,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
 
     // ── Falta solo el día ───────────────────────────────────────────────────
     case 'AWAITING_DATE': {
-      const newDetails = await extractEventDetails(textContent);
+      const newDetails = await extractEventDetails(textContent, { chatId });
 
       if (!newDetails.date_specified) {
         await sendMessage(chatId,
@@ -481,7 +481,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
 
     // ── Falta solo la hora ──────────────────────────────────────────────────
     case 'AWAITING_TIME': {
-      const newDetails = await extractEventDetails(textContent);
+      const newDetails = await extractEventDetails(textContent, { chatId });
 
       if (!newDetails.time_specified) {
         await sendMessage(chatId,
@@ -509,7 +509,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
 
     // ── Faltan día y hora ───────────────────────────────────────────────────
     case 'AWAITING_DATETIME': {
-      const newDetails = await extractEventDetails(textContent);
+      const newDetails = await extractEventDetails(textContent, { chatId });
       const missingDate = !newDetails.date_specified;
       const missingTime = !newDetails.time_specified;
 
@@ -828,7 +828,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
 
 async function processVoiceIntent(chatId, transcription, calendarId) {
   const history = await getRecentEventHistory(chatId).catch(() => []);
-  const eventDetails = await extractEventDetails(transcription, { history });
+  const eventDetails = await extractEventDetails(transcription, { history, chatId });
 
   if (!eventDetails || eventDetails.intent === 'desconocido') {
     await sendMessage(chatId,

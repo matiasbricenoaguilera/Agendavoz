@@ -10,6 +10,7 @@
  *   POST ?action=toggle-user    — Activa/desactiva un usuario { telegramId, status }
  *   POST ?action=update-prefs   — Actualiza preferencias { telegramId, ...prefs }
  *   GET  ?action=history        — Historial de eventos (con filtros opcionales)
+ *   GET  ?action=usage          — Consumo de APIs de IA (costos estimados)
  */
 
 import { resolve } from 'path';
@@ -154,6 +155,58 @@ export const handler = async (event) => {
       const { data, error: err } = await query;
       if (err) return error(err.message);
       return ok(data ?? []);
+    }
+
+    // ── GET usage ─────────────────────────────────────────────────────────────
+    if (event.httpMethod === 'GET' && action === 'usage') {
+      const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const monthStr = todayStr.slice(0, 7);
+
+      const { data, error: err } = await sb
+        .from('api_usage')
+        .select('telegram_id, kind, tokens_in, tokens_out, audio_seconds, cost_usd, created_at')
+        .gte('created_at', since30)
+        .order('created_at', { ascending: false });
+
+      if (err) return error(err.message);
+      const rows = data ?? [];
+
+      let costToday = 0, costMonth = 0, totalTokens = 0, totalAudioSeconds = 0;
+      const byUser = {};
+      const byDay  = {};
+
+      for (const row of rows) {
+        const day = row.created_at.slice(0, 10);
+        const cost = Number(row.cost_usd ?? 0);
+
+        if (day === todayStr) costToday += cost;
+        if (day.slice(0, 7) === monthStr) costMonth += cost;
+        totalTokens       += (row.tokens_in ?? 0) + (row.tokens_out ?? 0);
+        totalAudioSeconds += Number(row.audio_seconds ?? 0);
+
+        const userKey = row.telegram_id ?? 'desconocido';
+        byUser[userKey] = (byUser[userKey] ?? 0) + cost;
+        byDay[day]      = (byDay[day] ?? 0) + cost;
+      }
+
+      const topUsers = Object.entries(byUser)
+        .map(([telegramId, costUsd]) => ({ telegramId, costUsd }))
+        .sort((a, b) => b.costUsd - a.costUsd)
+        .slice(0, 20);
+
+      const dailyCosts = Object.entries(byDay)
+        .map(([day, costUsd]) => ({ day, costUsd }))
+        .sort((a, b) => a.day.localeCompare(b.day));
+
+      return ok({
+        costToday,
+        costMonth,
+        totalTokens,
+        totalAudioMinutes: totalAudioSeconds / 60,
+        topUsers,
+        dailyCosts,
+      });
     }
 
     return error('Acción no reconocida', 400);
