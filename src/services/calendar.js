@@ -13,6 +13,34 @@ const EVENT_DURATION_MS = 60 * 60 * 1000;     // 1 hora
 const WORKDAY_START_H   = 8;                   // 08:00 Chile
 const WORKDAY_END_H     = 20;                  // 20:00 Chile
 
+// Mapeo de categoría → colorId de Google Calendar, para que el usuario
+// distinga sus eventos visualmente por tipo de actividad.
+export const CATEGORY_COLOR_IDS = {
+  trabajo:  '9',  // Blueberry
+  salud:    '11', // Tomato
+  personal: '8',  // Graphite
+  social:   '5',  // Banana
+  estudio:  '7',  // Peacock
+  otro:     null,
+};
+
+export const CATEGORY_EMOJIS = {
+  trabajo:  '💼',
+  salud:    '🏥',
+  personal: '👤',
+  social:   '🎉',
+  estudio:  '📚',
+  otro:     '📌',
+};
+
+/** Retorna la categoría correspondiente a un colorId de Google Calendar, o null. */
+export function categoryFromColorId(colorId) {
+  for (const [category, id] of Object.entries(CATEGORY_COLOR_IDS)) {
+    if (id && id === colorId) return category;
+  }
+  return null;
+}
+
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 function getCalendarClient() {
@@ -189,7 +217,7 @@ export async function checkAvailability(startTime, endTime, calendarId) {
  * @param {{ summary, start_time, end_time, notes, calendarId }} eventData
  * @returns {Promise<Object>} Objeto del evento creado por Google Calendar.
  */
-export async function createCalendarEvent({ summary, start_time, end_time, notes = '', calendarId }) {
+export async function createCalendarEvent({ summary, start_time, end_time, notes = '', category, calendarId }) {
   const calendar = getCalendarClient();
 
   const event = {
@@ -198,6 +226,9 @@ export async function createCalendarEvent({ summary, start_time, end_time, notes
     start: { dateTime: start_time, timeZone: TIMEZONE },
     end:   { dateTime: end_time,   timeZone: TIMEZONE },
   };
+
+  const colorId = CATEGORY_COLOR_IDS[category];
+  if (colorId) event.colorId = colorId;
 
   const response = await calendar.events.insert({
     calendarId,

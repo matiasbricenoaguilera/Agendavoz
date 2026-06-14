@@ -12,12 +12,21 @@ import { config as loadEnv } from 'dotenv';
 loadEnv({ path: resolve(process.cwd(), '.env') });
 
 import { sendMessage }      from '../../src/services/telegram.js';
-import { listEvents }        from '../../src/services/calendar.js';
+import { listEvents, categoryFromColorId, CATEGORY_EMOJIS } from '../../src/services/calendar.js';
 import { getAllActiveUsers }  from '../../src/services/supabase.js';
 import { formatTimeOnly, getChileDateString, dayBoundsChileISO } from '../../src/utils/dateUtils.js';
 import { logger } from '../../src/utils/logger.js';
 
 const TIMEZONE = 'America/Santiago';
+
+const CATEGORY_LABELS = {
+  trabajo:  'Trabajo',
+  salud:    'Salud',
+  personal: 'Personal',
+  social:   'Social',
+  estudio:  'Estudio',
+  otro:     'Otros',
+};
 
 export const handler = async () => {
   logger.info('Iniciando resumen semanal');
@@ -55,6 +64,9 @@ export const handler = async () => {
           byDay[dKey].push(e);
         }
 
+        // Acumula duración por categoría para el resumen final
+        const categoryStats = {};
+
         for (const [dKey, dayEvents] of Object.entries(byDay).sort()) {
           const dayName = new Date(`${dKey}T12:00:00Z`).toLocaleDateString('es-CL', {
             timeZone: TIMEZONE, weekday: 'long', day: 'numeric', month: 'long',
@@ -63,9 +75,30 @@ export const handler = async () => {
           dayEvents.forEach((e) => {
             const startStr = e.start.dateTime ? formatTimeOnly(e.start.dateTime) : 'Todo el día';
             const endStr   = e.end.dateTime   ? formatTimeOnly(e.end.dateTime)   : '';
+            const category = categoryFromColorId(e.colorId);
+            const emoji    = category ? CATEGORY_EMOJIS[category] : '';
+
             msg += `  • ${escapeHtml(e.summary ?? 'Sin título')}`;
-            msg += ` 🕐 ${startStr}${endStr ? `–${endStr}` : ''}\n`;
+            msg += ` 🕐 ${startStr}${endStr ? `–${endStr}` : ''}${emoji ? ` ${emoji}` : ''}\n`;
+
+            if (category && e.start.dateTime && e.end.dateTime) {
+              const hours = (new Date(e.end.dateTime) - new Date(e.start.dateTime)) / 3600000;
+              categoryStats[category] = categoryStats[category] ?? { count: 0, hours: 0 };
+              categoryStats[category].count += 1;
+              categoryStats[category].hours += hours;
+            }
           });
+          msg += '\n';
+        }
+
+        if (Object.keys(categoryStats).length > 0) {
+          msg += `────────────────\n📊 <b>Resumen por categoría:</b>\n`;
+          for (const [category, stats] of Object.entries(categoryStats).sort((a, b) => b[1].hours - a[1].hours)) {
+            const label = CATEGORY_LABELS[category] ?? category;
+            const emoji = CATEGORY_EMOJIS[category] ?? '';
+            const hoursStr = stats.hours % 1 === 0 ? stats.hours.toFixed(0) : stats.hours.toFixed(1);
+            msg += `${emoji} ${label}: ${stats.count} evento(s) (${hoursStr}h)\n`;
+          }
           msg += '\n';
         }
 

@@ -371,6 +371,7 @@ export async function logEvent(telegramId, calendarId, eventData) {
     summary:         eventData.summary ?? '',
     start_time:      eventData.start_time ?? null,
     end_time:        eventData.end_time ?? null,
+    category:        eventData.category ?? null,
     transcription:   eventData.transcription ?? '',
     action:          eventData.action,
   });

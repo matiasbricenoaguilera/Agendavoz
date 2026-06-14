@@ -146,6 +146,7 @@ Responde ÚNICAMENTE con un objeto JSON válido con esta estructura exacta:
   "new_notes": null,
   "date_specified": true,
   "time_specified": true,
+  "category": "trabajo",
   "additional_events": []
 }
 
@@ -166,6 +167,14 @@ Reglas generales:
 5. Si el usuario SÍ dijo una hora marca "time_specified": true.
 6. Usa siempre formato ISO 8601 con offset -04:00.
 7. No incluyas markdown, solo el JSON puro.
+8. "category" (solo aplica a intents "agendar" y "editar"; en otros casos usa "otro"):
+   clasifica el evento en UNA de estas categorías según su naturaleza:
+   - "trabajo": reuniones, llamadas laborales, entregas, tareas de oficina.
+   - "salud": médico, dentista, gimnasio, terapia, exámenes.
+   - "personal": trámites, compras, citas personales.
+   - "social": juntas con amigos, cumpleaños, eventos familiares.
+   - "estudio": clases, cursos, certámenes.
+   - "otro": cualquier cosa que no calce claramente en las anteriores.
 
 Reglas por intent:
 - "mover": El usuario quiere cambiar el horario de un evento existente.
@@ -193,7 +202,7 @@ Eventos múltiples (solo para intent "agendar"):
   usa los campos principales (summary, start_time, end_time, etc.) para el
   PRIMER evento, y coloca los demás en "additional_events" como objetos con
   la misma forma: { "summary", "start_time", "end_time", "notes",
-  "date_specified", "time_specified" }.
+  "date_specified", "time_specified", "category" }.
 - Si solo hay un evento, "additional_events" debe ser un arreglo vacío [].
 - Cada evento en "additional_events" debe tener fecha Y hora especificadas
   por el usuario (date_specified y time_specified en true). Si a algún

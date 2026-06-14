@@ -22,6 +22,7 @@ import { transcribeAudio, extractEventDetails, detectSimpleIntent } from '../../
 import {
   checkAvailability, createCalendarEvent, findNextFreeSlots,
   listEvents, getBusyEvent, deleteCalendarEvent, updateCalendarEvent, getEventById,
+  CATEGORY_EMOJIS,
 }                                                                  from '../../src/services/calendar.js';
 import {
   getConversation, saveConversation, clearConversation, logEvent,
@@ -453,6 +454,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
         summary:    context.partial_event.summary,
         start_time, end_time,
         notes:      context.partial_event.notes ?? '',
+        category:   context.partial_event.category ?? 'otro',
       }, calendarId, context.transcription ?? textContent);
       break;
     }
@@ -480,6 +482,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
         summary:    context.partial_event.summary,
         start_time, end_time,
         notes:      context.partial_event.notes ?? '',
+        category:   context.partial_event.category ?? 'otro',
       }, calendarId, context.transcription ?? textContent);
       break;
     }
@@ -540,6 +543,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
         start_time: newDetails.start_time,
         end_time:   newDetails.end_time,
         notes:      context.partial_event.notes ?? '',
+        category:   context.partial_event.category ?? 'otro',
       }, calendarId, context.transcription ?? textContent);
       break;
     }
@@ -844,7 +848,7 @@ async function processAgendarIntent(chatId, eventDetails, transcription, calenda
 
   if (missingDate && missingTime) {
     await saveConversation(chatId, 'AWAITING_DATETIME', {
-      partial_event: { summary: eventDetails.summary, notes: eventDetails.notes ?? '' },
+      partial_event: { summary: eventDetails.summary, notes: eventDetails.notes ?? '', category: eventDetails.category },
       transcription,
     });
     await sendMessage(chatId,
@@ -861,6 +865,7 @@ async function processAgendarIntent(chatId, eventDetails, transcription, calenda
       partial_event: {
         summary:     eventDetails.summary,
         notes:       eventDetails.notes ?? '',
+        category:    eventDetails.category,
         time:        extractTimeFromISO(eventDetails.start_time),
         duration_ms: new Date(eventDetails.end_time) - new Date(eventDetails.start_time),
       },
@@ -878,9 +883,10 @@ async function processAgendarIntent(chatId, eventDetails, transcription, calenda
   if (missingTime) {
     await saveConversation(chatId, 'AWAITING_TIME', {
       partial_event: {
-        summary: eventDetails.summary,
-        notes:   eventDetails.notes ?? '',
-        date:    extractDateFromISO(eventDetails.start_time),
+        summary:  eventDetails.summary,
+        notes:    eventDetails.notes ?? '',
+        category: eventDetails.category,
+        date:     extractDateFromISO(eventDetails.start_time),
       },
       transcription,
     });
@@ -902,6 +908,7 @@ async function processAgendarIntent(chatId, eventDetails, transcription, calenda
       start_time: e.start_time,
       end_time:   e.end_time,
       notes:      e.notes ?? '',
+      category:   e.category ?? 'otro',
     }));
 
   // Tenemos todo — pedir confirmación
@@ -910,6 +917,7 @@ async function processAgendarIntent(chatId, eventDetails, transcription, calenda
     start_time: eventDetails.start_time,
     end_time:   eventDetails.end_time,
     notes:      eventDetails.notes ?? '',
+    category:   eventDetails.category ?? 'otro',
   }, calendarId, transcription, queue);
 }
 
@@ -920,9 +928,11 @@ async function askForConfirmation(chatId, event, calendarId, transcription, queu
 
   const remaining = queue.length > 0 ? `\n\n📋 Quedan ${queue.length} evento(s) más por confirmar después de este.` : '';
 
+  const categoryEmoji = CATEGORY_EMOJIS[event.category] ?? '';
+
   await sendMessage(chatId,
     `📋 <b>¿Confirmas este evento?</b>\n\n` +
-    `📌 <b>${escapeHtml(event.summary)}</b>\n` +
+    `📌 <b>${escapeHtml(event.summary)}</b> ${categoryEmoji}\n` +
     `📅 ${escapeHtml(formatDateTime(event.start_time))}\n` +
     `⏱ Hasta las ${escapeHtml(formatTimeOnly(event.end_time))}${remaining}\n\n` +
     `Responde <b>"sí"</b> para agendar o <b>"no"</b> para cancelar 🎙️`,
@@ -954,6 +964,7 @@ async function scheduleEvent(chatId, event, calendarId, transcription, queue = [
       summary:      event.summary,
       start_time:   event.start_time,
       end_time:     event.end_time,
+      category:     event.category ?? 'otro',
       transcription,
       action:       'created',
     });
@@ -976,7 +987,7 @@ async function scheduleEvent(chatId, event, calendarId, transcription, queue = [
     const freeSlots  = await findNextFreeSlots(event.start_time, 2, calendarId);
 
     await saveConversation(chatId, 'AWAITING_SLOT_CHOICE', {
-      event:            { summary: event.summary, notes: event.notes ?? '' },
+      event:            { summary: event.summary, notes: event.notes ?? '', category: event.category ?? 'otro' },
       busy_event:       busyEvent,
       requested_start:  event.start_time,
       requested_end:    event.end_time,
@@ -1027,6 +1038,7 @@ async function overwriteEvent(chatId, event, slot, busyEvent, calendarId, transc
     summary:      event.summary,
     start_time:   slot.start,
     end_time:     slot.end,
+    category:     event.category ?? 'otro',
     transcription,
     action:       'created',
   });
@@ -1053,6 +1065,7 @@ async function forceScheduleEvent(chatId, event, calendarId, transcription) {
     summary:      event.summary,
     start_time:   event.start_time,
     end_time:     event.end_time,
+    category:     event.category ?? 'otro',
     transcription,
     action:       'created',
   });
