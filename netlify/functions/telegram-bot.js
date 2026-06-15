@@ -8,17 +8,23 @@
  *   AWAITING_DATE         — tenemos resumen + hora, falta el día
  *   AWAITING_TIME         — tenemos resumen + día, falta la hora
  *   AWAITING_DATETIME     — tenemos resumen, falta día y hora
- *   AWAITING_CONFIRMATION — evento completo esperando "sí" o "no"
- *   AWAITING_SLOT_CHOICE  — slot ocupado, esperando 1 / 2 / reemplazar
- *   AWAITING_CANCEL_CONFIRM — evento encontrado para cancelar, esperando "sí" o "no"
+ *   AWAITING_CONFIRMATION — evento completo esperando botón Sí/No
+ *   AWAITING_SLOT_CHOICE  — slot ocupado, esperando botón 1 / 2 / reemplazar / etc.
+ *   AWAITING_CANCEL_CONFIRM — evento encontrado para cancelar, esperando botón Sí/No
+ *
+ * Los estados AWAITING_CONFIRMATION, AWAITING_SLOT_CHOICE, AWAITING_CANCEL_CONFIRM,
+ * AWAITING_MOVE_CONFIRM, AWAITING_MOVE_SLOT_CHOICE, AWAITING_NOTE_CONFIRM y
+ * AWAITING_EDIT_CONFIRM solo se resuelven mediante los botones inline del mensaje
+ * (ver BUTTON_ONLY_STATES) — la voz queda reservada para crear/consultar/cancelar/
+ * mover/anotar/editar eventos y para completar día/hora en AWAITING_DATE/TIME/DATETIME.
  */
 
 import { resolve } from 'path';
 import { config as loadEnv } from 'dotenv';
 loadEnv({ path: resolve(process.cwd(), '.env') });
 
-import { sendMessage, sendTypingAction, downloadFile, answerCallbackQuery } from '../../src/services/telegram.js';
-import { transcribeAudio, extractEventDetails, detectSimpleIntent } from '../../src/services/gemini.js';
+import { sendMessage, sendTypingAction, downloadFile, answerCallbackQuery, editMessageReplyMarkup } from '../../src/services/telegram.js';
+import { transcribeAudio, extractEventDetails } from '../../src/services/gemini.js';
 import {
   checkAvailability, createCalendarEvent, findNextFreeSlots,
   listEvents, getBusyEvent, deleteCalendarEvent, updateCalendarEvent, getEventById,
@@ -41,6 +47,13 @@ import { logger }                                                  from '../../s
 const OK_RESPONSE = { statusCode: 200, body: 'OK' };
 const DEFAULT_DURATION_MS = 60 * 60 * 1000; // 1 hora
 const TIMEZONE = 'America/Santiago';
+
+// Estados que solo se resuelven con los botones inline del mensaje (ver arriba).
+const BUTTON_ONLY_STATES = new Set([
+  'AWAITING_CONFIRMATION', 'AWAITING_SLOT_CHOICE', 'AWAITING_CANCEL_CONFIRM',
+  'AWAITING_MOVE_CONFIRM', 'AWAITING_MOVE_SLOT_CHOICE', 'AWAITING_NOTE_CONFIRM',
+  'AWAITING_EDIT_CONFIRM',
+]);
 
 const REQUIRED_VARS = [
   'TELEGRAM_BOT_TOKEN',
@@ -180,7 +193,8 @@ export const handler = async (event) => {
  * "✅ Ok" (solo confirma recepción) y "⏰ Posponer 15 min" (mueve el evento).
  */
 async function handleCallbackQuery(callback) {
-  const chatId = callback.message?.chat?.id;
+  const chatId    = callback.message?.chat?.id;
+  const messageId = callback.message?.message_id;
   const [action, eventId] = (callback.data ?? '').split(':');
 
   if (!chatId || !eventId) {
@@ -195,8 +209,20 @@ async function handleCallbackQuery(callback) {
       return;
     }
 
-    if (action === 'ok') {
+    if (action === 'reply') {
+      // Botones de confirmación / elección de la máquina de estados.
+      const pending = await getConversation(chatId);
+      if (!pending || !BUTTON_ONLY_STATES.has(pending.state)) {
+        await answerCallbackQuery(callback.id, '⏱ Esta opción ya no está disponible.', { show_alert: true }).catch(() => {});
+        return;
+      }
+      await answerCallbackQuery(callback.id).catch(() => {});
+      if (messageId) await editMessageReplyMarkup(chatId, messageId).catch(() => {});
+      await handlePendingState(chatId, null, pending, calendarId, eventId);
+
+    } else if (action === 'ok') {
       await answerCallbackQuery(callback.id, '👍 ¡Entendido!');
+      if (messageId) await editMessageReplyMarkup(chatId, messageId).catch(() => {});
 
     } else if (action === 'postpone15') {
       const ev = await getEventById(eventId, calendarId);
@@ -224,6 +250,7 @@ async function handleCallbackQuery(callback) {
       await setLastEvent(chatId, { id: eventId, summary: ev.summary ?? '', start_time: newStart, end_time: newEnd });
 
       await answerCallbackQuery(callback.id, '⏰ Evento pospuesto 15 minutos.');
+      if (messageId) await editMessageReplyMarkup(chatId, messageId).catch(() => {});
       await sendMessage(chatId,
         `⏰ <b>Recordatorio pospuesto:</b>\n\n` +
         `📌 <b>${escapeHtml(ev.summary ?? 'Sin título')}</b>\n` +
@@ -395,6 +422,14 @@ async function processMessage(message, calendarId) {
   const chatId  = message.chat.id;
   const isVoice = !!(message.voice || message.audio);
 
+  // Si el bot está esperando que el usuario use los botones de la pregunta
+  // anterior, no transcribimos ni procesamos texto/voz: solo se lo recordamos.
+  const pendingBeforeVoice = await getConversation(chatId);
+  if (pendingBeforeVoice && BUTTON_ONLY_STATES.has(pendingBeforeVoice.state)) {
+    await sendMessage(chatId, '👆 Por favor usa los botones del mensaje anterior para responder esta pregunta.');
+    return;
+  }
+
   // Obtener el contenido de texto del mensaje
   let textContent = null;
 
@@ -419,10 +454,8 @@ async function processMessage(message, calendarId) {
   }
 
   // Verificar si hay un estado de conversación pendiente
-  const pending = await getConversation(chatId);
-
-  if (pending) {
-    await handlePendingState(chatId, textContent, pending, calendarId);
+  if (pendingBeforeVoice) {
+    await handlePendingState(chatId, textContent, pendingBeforeVoice, calendarId);
     return;
   }
 
@@ -436,7 +469,7 @@ async function processMessage(message, calendarId) {
 
 // ─── Máquina de estados ───────────────────────────────────────────────────────
 
-async function handlePendingState(chatId, textContent, pending, calendarId) {
+async function handlePendingState(chatId, textContent, pending, calendarId, resolvedIntent = null) {
   const { state, context } = pending;
   logger.info('Procesando estado pendiente', { chatId, state });
 
@@ -568,29 +601,24 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
       break;
     }
 
-    // ── Esperando confirmación del evento ───────────────────────────────────
+    // ── Esperando confirmación del evento (solo botones) ────────────────────
     case 'AWAITING_CONFIRMATION': {
-      const intent = detectSimpleIntent(textContent);
+      const intent = resolvedIntent;
 
       if (intent === 'yes') {
         await clearConversation(chatId);
         await scheduleEvent(chatId, context.event, calendarId, context.transcription ?? textContent, context.queue ?? []);
-      } else if (intent === 'no') {
+      } else {
         await clearConversation(chatId);
         await sendMessage(chatId, '↩️ Cancelado. No se agendó ningún evento.');
         await proceedWithQueue(chatId, context, calendarId);
-      } else {
-        await sendMessage(chatId,
-          '🤔 No entendí tu respuesta.\n\n' +
-          'Responde <b>"sí"</b> para confirmar el evento o <b>"no"</b> para cancelarlo. 🎙️',
-        );
       }
       break;
     }
 
-    // ── Esperando elección de horario alternativo ───────────────────────────
+    // ── Esperando elección de horario alternativo (solo botones) ────────────
     case 'AWAITING_SLOT_CHOICE': {
-      const intent     = detectSimpleIntent(textContent);
+      const intent     = resolvedIntent;
       const { event, free_slots, busy_event, requested_start, requested_end } = context;
 
       if (intent === 'slot_1' && free_slots?.[0]) {
@@ -620,27 +648,17 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
         await forceScheduleEvent(chatId, forcedEvent, calendarId, context.transcription ?? textContent);
         await proceedWithQueue(chatId, context, calendarId);
 
-      } else if (intent === 'no') {
+      } else {
         await clearConversation(chatId);
         await sendMessage(chatId, '↩️ Cancelado. No se agendó ningún evento.');
         await proceedWithQueue(chatId, context, calendarId);
-
-      } else {
-        let msg =
-          '🤔 No entendí tu elección. Responde:\n\n' +
-          '• <b>"primera"</b> o <b>"1"</b> — primer horario disponible\n' +
-          '• <b>"segunda"</b> o <b>"2"</b> — segundo horario disponible\n';
-        if (busy_event) msg += '• <b>"reemplazar"</b> — sobreescribir el evento existente\n';
-        msg += '• <b>"de todas formas"</b> o <b>"4"</b> — agendar aunque el horario esté ocupado\n';
-        msg += '• <b>"no"</b> — cancelar 🎙️';
-        await sendMessage(chatId, msg);
       }
       break;
     }
 
-    // ── Esperando confirmación de cancelación ───────────────────────────────
+    // ── Esperando confirmación de cancelación (solo botones) ────────────────
     case 'AWAITING_CANCEL_CONFIRM': {
-      const intent = detectSimpleIntent(textContent);
+      const intent = resolvedIntent;
 
       if (intent === 'yes') {
         await clearConversation(chatId);
@@ -659,38 +677,31 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
           `📅 ${escapeHtml(formatDateTime(context.event_start))}`,
         );
 
-      } else if (intent === 'no') {
+      } else {
         await clearConversation(chatId);
         await sendMessage(chatId, '↩️ Cancelación abortada. El evento permanece en tu calendario.');
-
-      } else {
-        await sendMessage(chatId,
-          '🤔 No entendí. Responde <b>"sí"</b> para cancelar el evento o <b>"no"</b> para dejarlo. 🎙️',
-        );
       }
       break;
     }
 
-    // ── Esperando confirmación para mover evento ────────────────────────────
+    // ── Esperando confirmación para mover evento (solo botones) ─────────────
     case 'AWAITING_MOVE_CONFIRM': {
-      const intent = detectSimpleIntent(textContent);
+      const intent = resolvedIntent;
 
       if (intent === 'yes') {
         await clearConversation(chatId);
         const { event_id, event_summary, new_start_time, new_end_time, transcription } = context;
         await performMove(chatId, calendarId, { event_id, event_summary, new_start_time, new_end_time, transcription });
-      } else if (intent === 'no') {
+      } else {
         await clearConversation(chatId);
         await sendMessage(chatId, '↩️ Cancelado. El evento no fue modificado.');
-      } else {
-        await sendMessage(chatId, '🤔 Responde <b>"sí"</b> para confirmar el cambio o <b>"no"</b> para cancelar. 🎙️');
       }
       break;
     }
 
-    // ── Esperando elección de horario al mover un evento (conflicto) ────────
+    // ── Esperando elección de horario al mover un evento (solo botones) ─────
     case 'AWAITING_MOVE_SLOT_CHOICE': {
-      const intent = detectSimpleIntent(textContent);
+      const intent = resolvedIntent;
       const {
         event_id, event_summary,
         requested_start, requested_end, busy_event, free_slots, transcription,
@@ -698,10 +709,6 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
 
       if (intent === 'slot_1' || intent === 'slot_2') {
         const slot = intent === 'slot_1' ? free_slots?.[0] : free_slots?.[1];
-        if (!slot) {
-          await sendMessage(chatId, '🤔 Esa opción no está disponible. Elige otra.');
-          break;
-        }
         await clearConversation(chatId);
         await performMove(chatId, calendarId, {
           event_id, event_summary,
@@ -733,21 +740,16 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
           transcription,
         });
 
-      } else if (intent === 'no') {
+      } else {
         await clearConversation(chatId);
         await sendMessage(chatId, '↩️ Cancelado. El evento no fue modificado.');
-
-      } else {
-        await sendMessage(chatId,
-          '🤔 No entendí. Responde con el número de una opción (1️⃣, 2️⃣, 3️⃣ o 4️⃣) o <b>"no"</b> para cancelar. 🎙️',
-        );
       }
       break;
     }
 
-    // ── Esperando confirmación para agregar nota ─────────────────────────────
+    // ── Esperando confirmación para agregar nota (solo botones) ─────────────
     case 'AWAITING_NOTE_CONFIRM': {
-      const intent = detectSimpleIntent(textContent);
+      const intent = resolvedIntent;
 
       if (intent === 'yes') {
         await clearConversation(chatId);
@@ -771,18 +773,16 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
           `📅 ${escapeHtml(formatDateTime(event_start))}\n\n` +
           `<i>"${escapeHtml(notes)}"</i>`,
         );
-      } else if (intent === 'no') {
+      } else {
         await clearConversation(chatId);
         await sendMessage(chatId, '↩️ Cancelado. El evento no fue modificado.');
-      } else {
-        await sendMessage(chatId, '🤔 Responde <b>"sí"</b> para agregar la nota o <b>"no"</b> para cancelar. 🎙️');
       }
       break;
     }
 
-    // ── Esperando confirmación para editar título/descripción ───────────────
+    // ── Esperando confirmación para editar título/descripción (solo botones) ─
     case 'AWAITING_EDIT_CONFIRM': {
-      const intent = detectSimpleIntent(textContent);
+      const intent = resolvedIntent;
 
       if (intent === 'yes') {
         await clearConversation(chatId);
@@ -809,11 +809,9 @@ async function handlePendingState(chatId, textContent, pending, calendarId) {
           `📌 <b>${escapeHtml(new_summary ?? event_summary)}</b>\n` +
           `📅 ${escapeHtml(formatDateTime(event_start))}`,
         );
-      } else if (intent === 'no') {
+      } else {
         await clearConversation(chatId);
         await sendMessage(chatId, '↩️ Cancelado. El evento no fue modificado.');
-      } else {
-        await sendMessage(chatId, '🤔 Responde <b>"sí"</b> para aplicar los cambios o <b>"no"</b> para cancelar. 🎙️');
       }
       break;
     }
@@ -954,8 +952,8 @@ async function askForConfirmation(chatId, event, calendarId, transcription, queu
     `📋 <b>¿Confirmas este evento?</b>\n\n` +
     `📌 <b>${escapeHtml(event.summary)}</b> ${categoryEmoji}\n` +
     `📅 ${escapeHtml(formatDateTime(event.start_time))}\n` +
-    `⏱ Hasta las ${escapeHtml(formatTimeOnly(event.end_time))}${remaining}\n\n` +
-    `Responde <b>"sí"</b> para agendar o <b>"no"</b> para cancelar 🎙️`,
+    `⏱ Hasta las ${escapeHtml(formatTimeOnly(event.end_time))}${remaining}`,
+    { reply_markup: yesNoKeyboard('✅ Sí, agendar') },
   );
 }
 
@@ -1029,11 +1027,14 @@ async function scheduleEvent(chatId, event, calendarId, transcription, queue = [
       msg += `${emoji} ${escapeHtml(formatDateTime(slot.start))} — ${escapeHtml(formatTimeOnly(slot.end))}\n`;
     });
 
-    if (busyEvent) msg += `3️⃣ Reemplazar <i>${escapeHtml(busyEvent.summary)}</i>\n`;
-    msg += `4️⃣ Agendar de todas formas (ambos eventos quedarán simultáneos)\n`;
-    msg += `\nResponde con tu elección o <b>"no"</b> para cancelar 🎙️`;
+    if (busyEvent) msg += `♻️ Reemplazar <i>${escapeHtml(busyEvent.summary)}</i>\n`;
+    msg += `⚡ Agendar de todas formas (ambos eventos quedarán simultáneos)`;
 
-    await sendMessage(chatId, msg);
+    await sendMessage(chatId, msg, {
+      reply_markup: slotChoiceKeyboard({
+        hasSlot1: !!freeSlots[0], hasSlot2: !!freeSlots[1], hasBusyEvent: !!busyEvent,
+      }),
+    });
   }
 }
 
@@ -1249,8 +1250,8 @@ async function processCancelarIntent(chatId, eventDetails, transcription, calend
     `🔍 Encontré este evento:\n\n` +
     `📌 <b>${escapeHtml(target.summary ?? 'Sin título')}</b>\n` +
     `📅 ${escapeHtml(formatDateTime(target.start.dateTime ?? target.start.date))}\n\n` +
-    `¿Confirmas que quieres cancelarlo?\n` +
-    `Responde <b>"sí"</b> o <b>"no"</b> 🎙️`,
+    `¿Confirmas que quieres cancelarlo?`,
+    { reply_markup: yesNoKeyboard('✅ Sí, cancelar') },
   );
 }
 
@@ -1328,11 +1329,14 @@ async function processMoverIntent(chatId, eventDetails, transcription, calendarI
       const emoji = i === 0 ? '1️⃣' : '2️⃣';
       msg += `${emoji} ${escapeHtml(formatDateTime(slot.start))} — ${escapeHtml(formatTimeOnly(slot.end))}\n`;
     });
-    msg += `3️⃣ Reemplazar <i>${escapeHtml(busyEvent.summary)}</i>\n`;
-    msg += `4️⃣ Mover de todas formas (quedarán simultáneos)\n`;
-    msg += `\nResponde con tu elección o <b>"no"</b> para cancelar 🎙️`;
+    msg += `♻️ Reemplazar <i>${escapeHtml(busyEvent.summary)}</i>\n`;
+    msg += `⚡ Mover de todas formas (quedarán simultáneos)`;
 
-    await sendMessage(chatId, msg);
+    await sendMessage(chatId, msg, {
+      reply_markup: slotChoiceKeyboard({
+        hasSlot1: !!freeSlots[0], hasSlot2: !!freeSlots[1], hasBusyEvent: true,
+      }),
+    });
     return;
   }
 
@@ -1350,8 +1354,8 @@ async function processMoverIntent(chatId, eventDetails, transcription, calendarI
     `🔄 <b>¿Confirmas este cambio de horario?</b>\n\n` +
     `📌 <b>${escapeHtml(target.summary ?? summary)}</b>\n\n` +
     `🗓 <b>Antes:</b> ${escapeHtml(formatDateTime(target.start.dateTime ?? target.start.date))}\n` +
-    `🗓 <b>Después:</b> ${escapeHtml(formatDateTime(new_start_time))} — ${escapeHtml(formatTimeOnly(computedEnd))}\n\n` +
-    `Responde <b>"sí"</b> para mover o <b>"no"</b> para cancelar 🎙️`,
+    `🗓 <b>Después:</b> ${escapeHtml(formatDateTime(new_start_time))} — ${escapeHtml(formatTimeOnly(computedEnd))}`,
+    { reply_markup: yesNoKeyboard('✅ Sí, mover') },
   );
 }
 
@@ -1405,8 +1409,8 @@ async function processAnotarIntent(chatId, eventDetails, transcription, calendar
     `📝 <b>¿Confirmas agregar esta nota?</b>\n\n` +
     `📌 <b>${escapeHtml(target.summary ?? summary)}</b>\n` +
     `📅 ${escapeHtml(formatDateTime(target.start.dateTime ?? target.start.date))}\n\n` +
-    `Nota a agregar:\n<i>"${escapeHtml(notes)}"</i>\n\n` +
-    `Responde <b>"sí"</b> para confirmar o <b>"no"</b> para cancelar 🎙️`,
+    `Nota a agregar:\n<i>"${escapeHtml(notes)}"</i>`,
+    { reply_markup: yesNoKeyboard('✅ Sí, agregar') },
   );
 }
 
@@ -1463,9 +1467,7 @@ async function processEditarIntent(chatId, eventDetails, transcription, calendar
   if (new_summary)            msg += `Nuevo título: <b>${escapeHtml(new_summary)}</b>\n`;
   if (new_notes !== null && new_notes !== undefined) msg += `Nueva descripción:\n<i>"${escapeHtml(new_notes)}"</i>\n`;
 
-  msg += `\nResponde <b>"sí"</b> para confirmar o <b>"no"</b> para cancelar 🎙️`;
-
-  await sendMessage(chatId, msg);
+  await sendMessage(chatId, msg.trimEnd(), { reply_markup: yesNoKeyboard('✅ Sí, aplicar') });
 }
 
 // ─── Manejador de mensajes de texto ──────────────────────────────────────────
@@ -1538,6 +1540,39 @@ async function handleTextCommands(chatId, text, calendarId) {
     '🎙️ Para agendar, consultar o cancelar eventos, <b>envíame una nota de voz</b>.\n\n' +
     'Escribe /help para ver ejemplos.',
   );
+}
+
+// ─── Teclados inline ──────────────────────────────────────────────────────────
+
+/** Teclado simple "Sí" / "No" para confirmaciones. */
+function yesNoKeyboard(yesLabel = '✅ Sí') {
+  return {
+    inline_keyboard: [[
+      { text: yesLabel,  callback_data: 'reply:yes' },
+      { text: '❌ No',   callback_data: 'reply:no' },
+    ]],
+  };
+}
+
+/**
+ * Teclado de elección de horario alternativo (usado en AWAITING_SLOT_CHOICE
+ * y AWAITING_MOVE_SLOT_CHOICE): primera/segunda opción, reemplazar (si hay
+ * evento ocupando el horario) y agendar/mover de todas formas.
+ */
+function slotChoiceKeyboard({ hasSlot1, hasSlot2, hasBusyEvent }) {
+  const rows = [];
+  const slotRow = [];
+  if (hasSlot1) slotRow.push({ text: '1️⃣ Primera opción',  callback_data: 'reply:slot_1' });
+  if (hasSlot2) slotRow.push({ text: '2️⃣ Segunda opción', callback_data: 'reply:slot_2' });
+  if (slotRow.length > 0) rows.push(slotRow);
+
+  const otherRow = [];
+  if (hasBusyEvent) otherRow.push({ text: '♻️ Reemplazar', callback_data: 'reply:overwrite' });
+  otherRow.push({ text: '⚡ De todas formas', callback_data: 'reply:force' });
+  rows.push(otherRow);
+
+  rows.push([{ text: '❌ No', callback_data: 'reply:no' }]);
+  return { inline_keyboard: rows };
 }
 
 // ─── Utilidades ───────────────────────────────────────────────────────────────

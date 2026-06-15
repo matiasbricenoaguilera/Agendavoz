@@ -45,6 +45,35 @@ export async function answerCallbackQuery(callbackQueryId, text = '', extraOptio
 }
 
 /**
+ * Edita el teclado inline de un mensaje ya enviado (por defecto lo elimina).
+ * Útil para evitar doble-click una vez procesado el botón.
+ */
+export async function editMessageReplyMarkup(chatId, messageId, replyMarkup = { inline_keyboard: [] }) {
+  const payload = {
+    chat_id:      chatId,
+    message_id:   messageId,
+    reply_markup: replyMarkup,
+  };
+  const response = await axios.post(getApiUrl('editMessageReplyMarkup'), payload);
+  return response.data;
+}
+
+/**
+ * Edita el texto de un mensaje ya enviado (e.g. para reflejar la elección hecha).
+ */
+export async function editMessageText(chatId, messageId, text, extraOptions = {}) {
+  const payload = {
+    chat_id:    chatId,
+    message_id: messageId,
+    text,
+    parse_mode: 'HTML',
+    ...extraOptions,
+  };
+  const response = await axios.post(getApiUrl('editMessageText'), payload);
+  return response.data;
+}
+
+/**
  * Muestra el indicador "escribiendo..." en el chat.
  * No es crítico; los errores se silencian para no interrumpir el flujo.
  */

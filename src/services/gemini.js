@@ -279,31 +279,3 @@ Eventos múltiples (solo para intent "agendar"):
   logger.info('Detalles del evento extraídos', { details });
   return details;
 }
-
-// ─── 3. Detección de intención simple (sí/no/elección) ───────────────────────
-
-/**
- * Detecta la intención del usuario a partir de texto libre en español.
- * Se usa para procesar respuestas a confirmaciones, cancelaciones y elecciones de horario.
- *
- * @param {string} text - Texto del usuario (transcripción o mensaje directo).
- * @returns {'yes'|'no'|'slot_1'|'slot_2'|'overwrite'|'unknown'}
- */
-export function detectSimpleIntent(text = '') {
-  // Normalizamos: minúsculas + eliminar tildes para cubrir variantes escritas
-  const t = text
-    .toLowerCase()
-    .trim()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
-
-  if (/^(si|yes|dale|ok|bueno|listo|claro|correcto|perfecto|anda|adelante|agendalo|agenda|confirmar?|agendar?)(\s|$)/.test(t)) return 'yes';
-  if (/^(no|cancelar?|no gracias|negativo|mejor no|olvidalo|dejalo|espera|para|detente)(\s|$)/.test(t)) return 'no';
-
-  if (/^(primer[ao]?|uno|1|primera? opcion?|opcion? 1)(\s|$)/.test(t)) return 'slot_1';
-  if (/^(segund[ao]?|dos|2|segunda? opcion?|opcion? 2)(\s|$)/.test(t)) return 'slot_2';
-  if (/(reemplazar?|sobrescribir?|sobreescribir?|borrar?|eliminar?|tercera?|3|el existente|quita|borra)/.test(t)) return 'overwrite';
-  if (/(de todas formas?|igual(mente)?|cuarta?|4|agendalo igual|agendalo de todas|sin importar|doble|superponer?)/.test(t)) return 'force';
-
-  return 'unknown';
-}
