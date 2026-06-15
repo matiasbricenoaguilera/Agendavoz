@@ -65,6 +65,10 @@ Every calendar mutation is logged to `event_log` via `logEvent` with an `action`
 
 If a conversation is left in any `AWAITING_*_CONFIRM`/`AWAITING_CONFIRMATION`/`AWAITING_SLOT_CHOICE` state, `event-reminders.js` sends a one-time "¿Sigues ahí?" nudge (`sendPendingConfirmationNudges`/`getStaleConfirmations`/`markConversationNudged`, tracked via the `conversations.nudged` column) before the 30-min TTL expires the state.
 
+### Deshacer ("↩️ Deshacer")
+
+After a successful `agendar`/`mover`/`anotar`/`editar`/`cancelar` action (including overwrite/force-schedule), the bot attaches a one-time "↩️ Deshacer" button (`undo:<id>`) to the result message. `saveUndoAction`/`consumeUndoAction` (in `supabase.js`) store/retrieve the data needed to reverse it in the `undo_actions` table, keyed by `action_type` (`delete_event`, `restore_overwrite`, `restore_cancelled`, `restore_move`, `restore_note`, `restore_edit`). The button is valid for 5 minutes (`UNDO_TTL_MS`) and single-use; `handleUndoAction` in `telegram-bot.js` performs the reversal and logs the inverse `event_log` action.
+
 ### Event categorization
 
 `extractEventDetails` (for `agendar` and `editar` intents) also returns a `category` (`trabajo`/`salud`/`personal`/`social`/`estudio`/`otro`), inferred from the event's nature. `createCalendarEvent` maps it to a Google Calendar `colorId` via `CATEGORY_COLOR_IDS` (and `CATEGORY_EMOJIS` for display) in `calendar.js`, and it's stored on `event_log.category`. `weekly-summary.js` reverses the mapping with `categoryFromColorId` to produce a per-category time breakdown in the weekly summary message.
@@ -75,7 +79,7 @@ See `.env.example` for the full list with descriptions. Required (checked at run
 
 ### Database schema
 
-`supabase/schema.sql` is the base schema; `migration_v2.sql` through `migration_v7.sql` are incremental migrations — apply in order for existing projects. Notably: v2 adds `reminders`/`event_log` action types (`moved`/`noted`) and the `users` table; v4 adds `users.last_event` (memory for "ese evento"/"muévelo" references); v5 adds the `edited` action and `conversations.nudged` (pending-confirmation nudges); v6 adds `event_log.category`; v7 adds the `api_usage` table (per-call OpenAI cost tracking — tokens for GPT-4o-mini, audio seconds for Whisper — surfaced in the admin panel's "Consumo IA" tab).
+`supabase/schema.sql` is the base schema; `migration_v2.sql` through `migration_v8.sql` are incremental migrations — apply in order for existing projects. Notably: v2 adds `reminders`/`event_log` action types (`moved`/`noted`) and the `users` table; v4 adds `users.last_event` (memory for "ese evento"/"muévelo" references); v5 adds the `edited` action and `conversations.nudged` (pending-confirmation nudges); v6 adds `event_log.category`; v7 adds the `api_usage` table (per-call OpenAI cost tracking — tokens for GPT-4o-mini, audio seconds for Whisper — surfaced in the admin panel's "Consumo IA" tab); v8 adds the `undo_actions` table for the "↩️ Deshacer" button (see "Deshacer" below).
 
 ### Timezone handling
 

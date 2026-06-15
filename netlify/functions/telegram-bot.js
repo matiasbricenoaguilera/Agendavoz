@@ -28,12 +28,13 @@ import { transcribeAudio, extractEventDetails } from '../../src/services/gemini.
 import {
   checkAvailability, createCalendarEvent, findNextFreeSlots,
   listEvents, getBusyEvent, deleteCalendarEvent, updateCalendarEvent, getEventById,
-  CATEGORY_EMOJIS,
+  CATEGORY_EMOJIS, categoryFromColorId,
 }                                                                  from '../../src/services/calendar.js';
 import {
   getConversation, saveConversation, clearConversation, logEvent,
   getUserByTelegramId, createUser, updateUser, generateMagicLink,
   getLastEvent, setLastEvent, getRecentEventHistory,
+  saveUndoAction, consumeUndoAction,
 } from '../../src/services/supabase.js';
 import {
   formatDateTime, formatDateLong, formatTimeOnly,
@@ -257,6 +258,9 @@ async function handleCallbackQuery(callback) {
         `🕐 Nuevo horario: ${escapeHtml(formatTimeOnly(newStart))}`,
       );
 
+    } else if (action === 'undo') {
+      await handleUndoAction(callback.id, chatId, messageId, eventId, calendarId);
+
     } else {
       await answerCallbackQuery(callback.id).catch(() => {});
     }
@@ -264,6 +268,118 @@ async function handleCallbackQuery(callback) {
   } catch (err) {
     logger.error('Error procesando callback_query', { error: err.message });
     await answerCallbackQuery(callback.id, '❌ Ocurrió un error.').catch(() => {});
+  }
+}
+
+/**
+ * Revierte la última acción del usuario (botón "↩️ Deshacer"), según el
+ * `action_type` guardado por `saveUndoAction`. Es de un solo uso y válida
+ * solo por unos minutos (ver UNDO_TTL_MS en src/services/supabase.js).
+ */
+async function handleUndoAction(callbackId, chatId, messageId, undoId, calendarId) {
+  const undo = await consumeUndoAction(undoId, chatId);
+  if (!undo) {
+    await answerCallbackQuery(callbackId, '⏱ Esta acción ya no se puede deshacer.', { show_alert: true }).catch(() => {});
+    return;
+  }
+
+  await answerCallbackQuery(callbackId).catch(() => {});
+  if (messageId) await editMessageReplyMarkup(chatId, messageId).catch(() => {});
+
+  const { action_type, payload } = undo;
+
+  try {
+    switch (action_type) {
+      case 'delete_event':
+        await deleteCalendarEvent(payload.event_id, calendarId);
+        await logEvent(chatId, calendarId, {
+          id:         payload.event_id,
+          summary:    payload.summary,
+          start_time: payload.start_time,
+          end_time:   payload.end_time,
+          action:     'cancelled',
+        });
+        await setLastEvent(chatId, null);
+        break;
+
+      case 'restore_overwrite': {
+        await deleteCalendarEvent(payload.new_event_id, calendarId);
+        const restored = await createCalendarEvent({ ...payload.busy_event, calendarId });
+        await logEvent(chatId, calendarId, {
+          id:         restored.id,
+          summary:    payload.busy_event.summary,
+          start_time: payload.busy_event.start_time,
+          end_time:   payload.busy_event.end_time,
+          category:   payload.busy_event.category,
+          action:     'created',
+        });
+        await setLastEvent(chatId, {
+          id: restored.id, summary: payload.busy_event.summary,
+          start_time: payload.busy_event.start_time, end_time: payload.busy_event.end_time,
+        });
+        break;
+      }
+
+      case 'restore_cancelled': {
+        const recreated = await createCalendarEvent({ ...payload, calendarId });
+        await logEvent(chatId, calendarId, {
+          id:         recreated.id,
+          summary:    payload.summary,
+          start_time: payload.start_time,
+          end_time:   payload.end_time,
+          category:   payload.category,
+          action:     'created',
+        });
+        await setLastEvent(chatId, {
+          id: recreated.id, summary: payload.summary,
+          start_time: payload.start_time, end_time: payload.end_time,
+        });
+        break;
+      }
+
+      case 'restore_move':
+        await updateCalendarEvent(payload.event_id, calendarId, {
+          start: { dateTime: payload.original_start, timeZone: TIMEZONE },
+          end:   { dateTime: payload.original_end,   timeZone: TIMEZONE },
+        });
+        await logEvent(chatId, calendarId, {
+          id:         payload.event_id,
+          summary:    payload.event_summary,
+          start_time: payload.original_start,
+          end_time:   payload.original_end,
+          action:     'moved',
+        });
+        await setLastEvent(chatId, {
+          id: payload.event_id, summary: payload.event_summary,
+          start_time: payload.original_start, end_time: payload.original_end,
+        });
+        break;
+
+      case 'restore_note':
+        await updateCalendarEvent(payload.event_id, calendarId, { description: payload.existing_description });
+        await logEvent(chatId, calendarId, {
+          id:      payload.event_id,
+          summary: payload.event_summary,
+          action:  'noted',
+        });
+        break;
+
+      case 'restore_edit':
+        await updateCalendarEvent(payload.event_id, calendarId, {
+          summary: payload.existing_summary, description: payload.existing_description,
+        });
+        await logEvent(chatId, calendarId, {
+          id:      payload.event_id,
+          summary: payload.existing_summary,
+          action:  'edited',
+        });
+        break;
+    }
+
+    await sendMessage(chatId, '↩️ Listo, se deshizo la última acción.');
+  } catch (err) {
+    logger.error('Error al deshacer acción', { error: err.message, action_type });
+    await sendMessage(chatId, '❌ No se pudo deshacer (puede que el evento haya sido modificado desde Google Calendar).');
   }
 }
 
@@ -671,10 +787,20 @@ async function handlePendingState(chatId, textContent, pending, calendarId, reso
           action:     'cancelled',
         });
         await setLastEvent(chatId, null);
+
+        const undoId = await saveUndoAction(chatId, calendarId, 'restore_cancelled', {
+          summary:    context.event_summary,
+          notes:      context.event_notes ?? '',
+          start_time: context.event_start,
+          end_time:   context.event_end,
+          category:   context.event_category ?? 'otro',
+        });
+
         await sendMessage(chatId,
           `🗑 <b>Evento cancelado:</b>\n\n` +
           `📌 ${escapeHtml(context.event_summary)}\n` +
           `📅 ${escapeHtml(formatDateTime(context.event_start))}`,
+          undoId ? { reply_markup: undoKeyboard(undoId) } : {},
         );
 
       } else {
@@ -690,8 +816,8 @@ async function handlePendingState(chatId, textContent, pending, calendarId, reso
 
       if (intent === 'yes') {
         await clearConversation(chatId);
-        const { event_id, event_summary, new_start_time, new_end_time, transcription } = context;
-        await performMove(chatId, calendarId, { event_id, event_summary, new_start_time, new_end_time, transcription });
+        const { event_id, event_summary, new_start_time, new_end_time, transcription, original_start, original_end } = context;
+        await performMove(chatId, calendarId, { event_id, event_summary, new_start_time, new_end_time, transcription, original_start, original_end });
       } else {
         await clearConversation(chatId);
         await sendMessage(chatId, '↩️ Cancelado. El evento no fue modificado.');
@@ -705,6 +831,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId, reso
       const {
         event_id, event_summary,
         requested_start, requested_end, busy_event, free_slots, transcription,
+        original_start, original_end,
       } = context;
 
       if (intent === 'slot_1' || intent === 'slot_2') {
@@ -713,7 +840,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId, reso
         await performMove(chatId, calendarId, {
           event_id, event_summary,
           new_start_time: slot.start, new_end_time: slot.end,
-          transcription,
+          transcription, original_start, original_end,
         });
 
       } else if (intent === 'overwrite') {
@@ -729,7 +856,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId, reso
         await performMove(chatId, calendarId, {
           event_id, event_summary,
           new_start_time: requested_start, new_end_time: requested_end,
-          transcription,
+          transcription, original_start, original_end,
         });
 
       } else if (intent === 'force') {
@@ -737,7 +864,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId, reso
         await performMove(chatId, calendarId, {
           event_id, event_summary,
           new_start_time: requested_start, new_end_time: requested_end,
-          transcription,
+          transcription, original_start, original_end,
         });
 
       } else {
@@ -767,11 +894,17 @@ async function handlePendingState(chatId, textContent, pending, calendarId, reso
           action:     'noted',
         });
         await setLastEvent(chatId, { id: event_id, summary: event_summary, start_time: event_start, end_time: event_end });
+
+        const undoId = await saveUndoAction(chatId, calendarId, 'restore_note', {
+          event_id, event_summary, existing_description,
+        });
+
         await sendMessage(chatId,
           `📝 <b>Nota agregada al evento:</b>\n\n` +
           `📌 <b>${escapeHtml(event_summary)}</b>\n` +
           `📅 ${escapeHtml(formatDateTime(event_start))}\n\n` +
           `<i>"${escapeHtml(notes)}"</i>`,
+          undoId ? { reply_markup: undoKeyboard(undoId) } : {},
         );
       } else {
         await clearConversation(chatId);
@@ -786,7 +919,7 @@ async function handlePendingState(chatId, textContent, pending, calendarId, reso
 
       if (intent === 'yes') {
         await clearConversation(chatId);
-        const { event_id, event_summary, event_start, event_end, new_summary, new_notes } = context;
+        const { event_id, event_summary, event_start, event_end, new_summary, new_notes, existing_summary, existing_description } = context;
 
         const updates = {};
         if (new_summary) updates.summary = new_summary;
@@ -804,10 +937,16 @@ async function handlePendingState(chatId, textContent, pending, calendarId, reso
           id: event_id, summary: new_summary ?? event_summary,
           start_time: event_start, end_time: event_end,
         });
+
+        const undoId = await saveUndoAction(chatId, calendarId, 'restore_edit', {
+          event_id, existing_summary, existing_description,
+        });
+
         await sendMessage(chatId,
           `✏️ <b>Evento actualizado:</b>\n\n` +
           `📌 <b>${escapeHtml(new_summary ?? event_summary)}</b>\n` +
           `📅 ${escapeHtml(formatDateTime(event_start))}`,
+          undoId ? { reply_markup: undoKeyboard(undoId) } : {},
         );
       } else {
         await clearConversation(chatId);
@@ -989,12 +1128,20 @@ async function scheduleEvent(chatId, event, calendarId, transcription, queue = [
 
     await setLastEvent(chatId, { id: created.id, summary: event.summary, start_time: event.start_time, end_time: event.end_time });
 
+    const undoId = await saveUndoAction(chatId, calendarId, 'delete_event', {
+      event_id:   created.id,
+      summary:    event.summary,
+      start_time: event.start_time,
+      end_time:   event.end_time,
+    });
+
     await sendMessage(chatId,
       `✅ <b>¡Listo! Evento agendado:</b>\n\n` +
       `📌 <b>${escapeHtml(event.summary)}</b>\n` +
       `📅 ${escapeHtml(formatDateTime(event.start_time))}\n` +
       `⏱ Hasta las ${escapeHtml(formatTimeOnly(event.end_time))}\n\n` +
       `<a href="${created.htmlLink}">👉 Ver en Google Calendar</a>`,
+      undoId ? { reply_markup: undoKeyboard(undoId) } : {},
     );
 
     await proceedWithQueue(chatId, { queue, transcription }, calendarId);
@@ -1041,6 +1188,10 @@ async function scheduleEvent(chatId, event, calendarId, transcription, queue = [
 // ─── Sobreescribir evento existente ──────────────────────────────────────────
 
 async function overwriteEvent(chatId, event, slot, busyEvent, calendarId, transcription) {
+  // Capturamos descripción/categoría del evento que se va a eliminar, para
+  // poder recrearlo si el usuario presiona "Deshacer".
+  const fullBusyEvent = await getEventById(busyEvent.id, calendarId).catch(() => null);
+
   await deleteCalendarEvent(busyEvent.id, calendarId);
 
   await logEvent(chatId, calendarId, {
@@ -1066,6 +1217,17 @@ async function overwriteEvent(chatId, event, slot, busyEvent, calendarId, transc
 
   await setLastEvent(chatId, { id: created.id, summary: event.summary, start_time: slot.start, end_time: slot.end });
 
+  const undoId = await saveUndoAction(chatId, calendarId, 'restore_overwrite', {
+    new_event_id: created.id,
+    busy_event: {
+      summary:    busyEvent.summary,
+      notes:      fullBusyEvent?.description ?? '',
+      start_time: busyEvent.start,
+      end_time:   busyEvent.end,
+      category:   categoryFromColorId(fullBusyEvent?.colorId) ?? 'otro',
+    },
+  });
+
   await sendMessage(chatId,
     `♻️ <b>¡Evento reemplazado!</b>\n\n` +
     `🗑 Se eliminó: <i>${escapeHtml(busyEvent.summary)}</i>\n` +
@@ -1073,6 +1235,7 @@ async function overwriteEvent(chatId, event, slot, busyEvent, calendarId, transc
     `📅 ${escapeHtml(formatDateTime(slot.start))}\n` +
     `⏱ Hasta las ${escapeHtml(formatTimeOnly(slot.end))}\n\n` +
     `<a href="${created.htmlLink}">👉 Ver en Google Calendar</a>`,
+    undoId ? { reply_markup: undoKeyboard(undoId) } : {},
   );
 }
 
@@ -1093,6 +1256,13 @@ async function forceScheduleEvent(chatId, event, calendarId, transcription) {
 
   await setLastEvent(chatId, { id: created.id, summary: event.summary, start_time: event.start_time, end_time: event.end_time });
 
+  const undoId = await saveUndoAction(chatId, calendarId, 'delete_event', {
+    event_id:   created.id,
+    summary:    event.summary,
+    start_time: event.start_time,
+    end_time:   event.end_time,
+  });
+
   await sendMessage(chatId,
     `✅ <b>¡Evento agendado (horario compartido):</b>\n\n` +
     `📌 <b>${escapeHtml(event.summary)}</b>\n` +
@@ -1100,6 +1270,7 @@ async function forceScheduleEvent(chatId, event, calendarId, transcription) {
     `⏱ Hasta las ${escapeHtml(formatTimeOnly(event.end_time))}\n\n` +
     `ℹ️ Este evento se superpone con otro existente.\n` +
     `<a href="${created.htmlLink}">👉 Ver en Google Calendar</a>`,
+    undoId ? { reply_markup: undoKeyboard(undoId) } : {},
   );
 }
 
@@ -1174,7 +1345,7 @@ function lastEventToTarget(lastEvent) {
 }
 
 /** Aplica el cambio de horario de un evento ya confirmado y notifica al usuario. */
-async function performMove(chatId, calendarId, { event_id, event_summary, new_start_time, new_end_time, transcription }) {
+async function performMove(chatId, calendarId, { event_id, event_summary, new_start_time, new_end_time, transcription, original_start, original_end }) {
   const updated = await updateCalendarEvent(event_id, calendarId, {
     start: { dateTime: new_start_time, timeZone: TIMEZONE },
     end:   { dateTime: new_end_time,   timeZone: TIMEZONE },
@@ -1191,12 +1362,20 @@ async function performMove(chatId, calendarId, { event_id, event_summary, new_st
 
   await setLastEvent(chatId, { id: event_id, summary: event_summary, start_time: new_start_time, end_time: new_end_time });
 
+  let undoId = null;
+  if (original_start && original_end) {
+    undoId = await saveUndoAction(chatId, calendarId, 'restore_move', {
+      event_id, event_summary, original_start, original_end,
+    });
+  }
+
   await sendMessage(chatId,
     `✅ <b>Evento movido:</b>\n\n` +
     `📌 <b>${escapeHtml(event_summary)}</b>\n` +
     `📅 ${escapeHtml(formatDateTime(new_start_time))}\n` +
     `⏱ Hasta las ${escapeHtml(formatTimeOnly(new_end_time))}\n\n` +
     `<a href="${updated.htmlLink}">👉 Ver en Google Calendar</a>`,
+    undoId ? { reply_markup: undoKeyboard(undoId) } : {},
   );
 }
 
@@ -1240,10 +1419,12 @@ async function processCancelarIntent(chatId, eventDetails, transcription, calend
   }
 
   await saveConversation(chatId, 'AWAITING_CANCEL_CONFIRM', {
-    event_id:      target.id,
-    event_summary: target.summary ?? 'Sin título',
-    event_start:   target.start.dateTime ?? target.start.date,
-    event_end:     target.end.dateTime   ?? target.end.date,
+    event_id:       target.id,
+    event_summary:  target.summary ?? 'Sin título',
+    event_start:    target.start.dateTime ?? target.start.date,
+    event_end:      target.end.dateTime   ?? target.end.date,
+    event_notes:    target.description ?? '',
+    event_category: categoryFromColorId(target.colorId) ?? 'otro',
   });
 
   await sendMessage(chatId,
@@ -1452,12 +1633,14 @@ async function processEditarIntent(chatId, eventDetails, transcription, calendar
   }
 
   await saveConversation(chatId, 'AWAITING_EDIT_CONFIRM', {
-    event_id:      target.id,
-    event_summary: target.summary ?? summary,
-    event_start:   target.start.dateTime ?? target.start.date,
-    event_end:     target.end.dateTime   ?? target.end.date,
-    new_summary:   new_summary || null,
-    new_notes:     new_notes ?? null,
+    event_id:             target.id,
+    event_summary:        target.summary ?? summary,
+    event_start:          target.start.dateTime ?? target.start.date,
+    event_end:            target.end.dateTime   ?? target.end.date,
+    new_summary:          new_summary || null,
+    new_notes:            new_notes ?? null,
+    existing_summary:     target.summary ?? summary,
+    existing_description: target.description ?? '',
   });
 
   let msg = `✏️ <b>¿Confirmas estos cambios?</b>\n\n` +
@@ -1573,6 +1756,11 @@ function slotChoiceKeyboard({ hasSlot1, hasSlot2, hasBusyEvent }) {
 
   rows.push([{ text: '❌ No', callback_data: 'reply:no' }]);
   return { inline_keyboard: rows };
+}
+
+/** Teclado con un único botón "↩️ Deshacer" para revertir una acción reciente. */
+function undoKeyboard(undoId) {
+  return { inline_keyboard: [[{ text: '↩️ Deshacer', callback_data: `undo:${undoId}` }]] };
 }
 
 // ─── Utilidades ───────────────────────────────────────────────────────────────

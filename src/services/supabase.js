@@ -11,6 +11,7 @@ import { logger } from '../utils/logger.js';
 
 const CONVERSATION_TTL_MS = 30 * 60 * 1000; // 30 minutos
 const MAGIC_LINK_TTL_MIN  = 30;             // 30 minutos
+const UNDO_TTL_MS         = 5 * 60 * 1000;  // 5 minutos
 
 function getClient() {
   const url = process.env.SUPABASE_URL;
@@ -406,6 +407,65 @@ export async function logApiUsage({ telegramId, model, kind, tokensIn = null, to
   });
 
   if (error) logger.error('Error guardando consumo de API en Supabase', { error: error.message });
+}
+
+// ─── Deshacer acciones recientes ──────────────────────────────────────────────
+
+/**
+ * Guarda los datos necesarios para revertir una acción reciente (botón
+ * "↩️ Deshacer"). Solo es válida por UNDO_TTL_MS y se consume una sola vez.
+ *
+ * @param {string|number} telegramId
+ * @param {string} calendarId
+ * @param {'delete_event'|'restore_overwrite'|'restore_cancelled'|'restore_move'|'restore_note'|'restore_edit'} actionType
+ * @param {object} payload - Datos necesarios para revertir, según actionType.
+ * @returns {Promise<string|null>} - ID de la acción de deshacer, o null si falló.
+ */
+export async function saveUndoAction(telegramId, calendarId, actionType, payload) {
+  const sb = getClient();
+  const { data, error } = await sb
+    .from('undo_actions')
+    .insert({
+      telegram_id: String(telegramId),
+      calendar_id: calendarId,
+      action_type: actionType,
+      payload,
+    })
+    .select('id')
+    .single();
+
+  if (error) {
+    logger.error('Error guardando acción de deshacer', { error: error.message });
+    return null;
+  }
+  return data.id;
+}
+
+/**
+ * Consume (de un solo uso) una acción de deshacer si existe, pertenece al
+ * usuario, no fue usada y no expiró (UNDO_TTL_MS).
+ *
+ * @param {string} id
+ * @param {string|number} telegramId
+ * @returns {Promise<{action_type: string, payload: object}|null>}
+ */
+export async function consumeUndoAction(id, telegramId) {
+  const sb = getClient();
+  const { data } = await sb
+    .from('undo_actions')
+    .update({ used: true })
+    .eq('id', id)
+    .eq('telegram_id', String(telegramId))
+    .eq('used', false)
+    .select()
+    .maybeSingle();
+
+  if (!data) return null;
+
+  const age = Date.now() - new Date(data.created_at).getTime();
+  if (age > UNDO_TTL_MS) return null;
+
+  return data;
 }
 
 /**
