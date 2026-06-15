@@ -24,7 +24,7 @@ import { config as loadEnv } from 'dotenv';
 loadEnv({ path: resolve(process.cwd(), '.env') });
 
 import { sendMessage, sendTypingAction, downloadFile, answerCallbackQuery, editMessageReplyMarkup } from '../../src/services/telegram.js';
-import { transcribeAudio, extractEventDetails } from '../../src/services/gemini.js';
+import { transcribeAudio, extractEventDetails, buildVocabularyHint } from '../../src/services/gemini.js';
 import {
   checkAvailability, createCalendarEvent, findNextFreeSlots,
   listEvents, getBusyEvent, deleteCalendarEvent, updateCalendarEvent, getEventById,
@@ -548,6 +548,7 @@ async function processMessage(message, calendarId) {
 
   // Obtener el contenido de texto del mensaje
   let textContent = null;
+  let voiceHistory = null;
 
   if (isVoice) {
     await sendTypingAction(chatId);
@@ -556,8 +557,11 @@ async function processMessage(message, calendarId) {
     const fileData = message.voice ?? message.audio;
     const { buffer, mimeType } = await downloadFile(fileData.file_id);
 
+    voiceHistory = await getRecentEventHistory(chatId).catch(() => []);
+    const vocabularyHint = buildVocabularyHint(voiceHistory);
+
     await sendMessage(chatId, '🧠 Transcribiendo con IA...');
-    textContent = await transcribeAudio(buffer, mimeType, chatId);
+    textContent = await transcribeAudio(buffer, mimeType, chatId, vocabularyHint);
 
     if (!textContent) {
       await sendMessage(chatId, '⚠️ No pude entender el audio. ¿Puedes intentarlo de nuevo?');
@@ -577,7 +581,7 @@ async function processMessage(message, calendarId) {
 
   // Sin estado pendiente: procesar como nuevo mensaje
   if (isVoice) {
-    await processVoiceIntent(chatId, textContent, calendarId);
+    await processVoiceIntent(chatId, textContent, calendarId, voiceHistory);
   } else {
     await handleTextCommands(chatId, textContent, calendarId);
   }
@@ -963,8 +967,8 @@ async function handlePendingState(chatId, textContent, pending, calendarId, reso
 
 // ─── Procesamiento de notas de voz (sin estado previo) ────────────────────────
 
-async function processVoiceIntent(chatId, transcription, calendarId) {
-  const history = await getRecentEventHistory(chatId).catch(() => []);
+async function processVoiceIntent(chatId, transcription, calendarId, history = null) {
+  history ??= await getRecentEventHistory(chatId).catch(() => []);
   const eventDetails = await extractEventDetails(transcription, { history, chatId });
 
   if (!eventDetails || eventDetails.intent === 'desconocido') {

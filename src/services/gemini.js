@@ -64,9 +64,11 @@ function buildDateContext() {
  * @param {Buffer} audioBuffer  - Bytes del archivo de audio.
  * @param {string} mimeType     - MIME type (e.g. 'audio/ogg').
  * @param {string|number} [chatId] - ID de Telegram del usuario, para registrar el consumo.
+ * @param {string} [vocabularyHint] - Vocabulario habitual del usuario (nombres, lugares,
+ *   títulos de eventos frecuentes) para mejorar el reconocimiento de palabras poco comunes.
  * @returns {Promise<string>}   - Texto transcrito en español.
  */
-export async function transcribeAudio(audioBuffer, mimeType, chatId) {
+export async function transcribeAudio(audioBuffer, mimeType, chatId, vocabularyHint) {
   const client = getClient();
 
   // Mapear MIME type a extensión para que Whisper identifique el formato
@@ -85,6 +87,7 @@ export async function transcribeAudio(audioBuffer, mimeType, chatId) {
     file,
     language:        'es',
     response_format: 'verbose_json',
+    ...(vocabularyHint ? { prompt: vocabularyHint } : {}),
   }), { label: 'transcribeAudio' });
 
   const transcription = response.text?.trim() ?? '';
@@ -132,6 +135,23 @@ function buildHistoryContext(history) {
 
 function extractTimeForHistory(isoString) {
   return isoString.slice(11, 16);
+}
+
+/**
+ * Construye un hint de vocabulario para Whisper a partir de los títulos de
+ * eventos recientes del usuario (nombres propios, lugares, términos habituales),
+ * para mejorar el reconocimiento de palabras poco comunes en la transcripción.
+ *
+ * @param {Array<{summary: string}>} history
+ * @returns {string} - Títulos únicos separados por coma, truncado a 200 caracteres.
+ */
+export function buildVocabularyHint(history) {
+  if (!history || history.length === 0) return '';
+
+  const unique = [...new Set(history.map((h) => h.summary).filter(Boolean))];
+  const hint = unique.join(', ');
+
+  return hint.length > 200 ? hint.slice(0, 200) : hint;
 }
 
 /**
