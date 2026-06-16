@@ -468,6 +468,44 @@ export async function consumeUndoAction(id, telegramId) {
   return data;
 }
 
+// ─── Correcciones de título ───────────────────────────────────────────────────
+
+/**
+ * Guarda un par original → corregido cuando el usuario edita el título
+ * de un evento recién agendado. Se usa para refinar el vocabulario de Whisper.
+ *
+ * @param {string|number} telegramId
+ * @param {string} original  - Título tal como lo entendió Whisper/NLU.
+ * @param {string} corrected - Título correcto ingresado por el usuario.
+ */
+export async function saveCorrection(telegramId, original, corrected) {
+  const sb = getClient();
+  const { error } = await sb.from('title_corrections').insert({
+    telegram_id: String(telegramId),
+    original,
+    corrected,
+  });
+  if (error) logger.error('Error guardando corrección de título', { error: error.message });
+}
+
+/**
+ * Retorna las correcciones de título más recientes de un usuario.
+ *
+ * @param {string|number} telegramId
+ * @param {number} [limit]
+ * @returns {Promise<Array<{original: string, corrected: string}>>}
+ */
+export async function getRecentCorrections(telegramId, limit = 10) {
+  const sb = getClient();
+  const { data } = await sb
+    .from('title_corrections')
+    .select('original, corrected')
+    .eq('telegram_id', String(telegramId))
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  return data ?? [];
+}
+
 /**
  * Retorna los eventos creados/movidos más recientes de un usuario, para
  * darle contexto al NLU sobre sus horarios habituales (e.g. "gimnasio"

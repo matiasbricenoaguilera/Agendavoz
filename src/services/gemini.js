@@ -139,18 +139,20 @@ function extractTimeForHistory(isoString) {
 
 /**
  * Construye un hint de vocabulario para Whisper a partir de los títulos de
- * eventos recientes del usuario (nombres propios, lugares, términos habituales),
- * para mejorar el reconocimiento de palabras poco comunes en la transcripción.
+ * eventos recientes del usuario (nombres propios, lugares, términos habituales)
+ * y de las correcciones previas que el usuario aplicó a títulos mal transcritos.
  *
  * @param {Array<{summary: string}>} history
- * @returns {string} - Títulos únicos separados por coma, truncado a 200 caracteres.
+ * @param {Array<{original: string, corrected: string}>} [corrections]
+ * @returns {string} - Términos únicos separados por coma, truncado a 200 caracteres.
  */
-export function buildVocabularyHint(history) {
-  if (!history || history.length === 0) return '';
+export function buildVocabularyHint(history, corrections = []) {
+  const fromHistory    = (history ?? []).map((h) => h.summary).filter(Boolean);
+  const fromCorrections = (corrections ?? []).map((c) => c.corrected).filter(Boolean);
+  const unique = [...new Set([...fromCorrections, ...fromHistory])];
 
-  const unique = [...new Set(history.map((h) => h.summary).filter(Boolean))];
+  if (unique.length === 0) return '';
   const hint = unique.join(', ');
-
   return hint.length > 200 ? hint.slice(0, 200) : hint;
 }
 

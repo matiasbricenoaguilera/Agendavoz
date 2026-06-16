@@ -17,6 +17,9 @@
  * AWAITING_EDIT_CONFIRM solo se resuelven mediante los botones inline del mensaje
  * (ver BUTTON_ONLY_STATES) — la voz queda reservada para crear/consultar/cancelar/
  * mover/anotar/editar eventos y para completar día/hora en AWAITING_DATE/TIME/DATETIME.
+ *
+ * AWAITING_QUICK_TITLE_EDIT — iniciado por el botón "✏️ Editar título" post-agendar;
+ * acepta texto o voz con el título corregido.
  */
 
 import { resolve } from 'path';
@@ -35,6 +38,7 @@ import {
   getUserByTelegramId, createUser, updateUser, generateMagicLink,
   getLastEvent, setLastEvent, getRecentEventHistory,
   saveUndoAction, consumeUndoAction,
+  saveCorrection, getRecentCorrections,
 } from '../../src/services/supabase.js';
 import {
   formatDateTime, formatDateLong, formatTimeOnly,
@@ -261,6 +265,9 @@ async function handleCallbackQuery(callback) {
     } else if (action === 'undo') {
       await handleUndoAction(callback.id, chatId, messageId, eventId, calendarId);
 
+    } else if (action === 'edit_title') {
+      await handleEditTitleCallback(callback.id, chatId, messageId, eventId, calendarId);
+
     } else {
       await answerCallbackQuery(callback.id).catch(() => {});
     }
@@ -381,6 +388,35 @@ async function handleUndoAction(callbackId, chatId, messageId, undoId, calendarI
     logger.error('Error al deshacer acción', { error: err.message, action_type });
     await sendMessage(chatId, '❌ No se pudo deshacer (puede que el evento haya sido modificado desde Google Calendar).');
   }
+}
+
+// ─── Editar título rápido desde botón ────────────────────────────────────────
+
+/**
+ * Inicia el flujo de edición rápida de título (botón "✏️ Editar título").
+ * Busca el evento, guarda el estado AWAITING_QUICK_TITLE_EDIT y pide el nuevo título.
+ */
+async function handleEditTitleCallback(callbackId, chatId, messageId, eventId, calendarId) {
+  const ev = await getEventById(eventId, calendarId).catch(() => null);
+  if (!ev) {
+    await answerCallbackQuery(callbackId, '⚠️ No encontré ese evento en el calendario.', { show_alert: true }).catch(() => {});
+    return;
+  }
+
+  await answerCallbackQuery(callbackId).catch(() => {});
+  if (messageId) await editMessageReplyMarkup(chatId, messageId).catch(() => {});
+
+  await saveConversation(chatId, 'AWAITING_QUICK_TITLE_EDIT', {
+    eventId,
+    originalSummary:     ev.summary ?? '',
+    originalDescription: ev.description ?? '',
+  });
+
+  await sendMessage(chatId,
+    `✏️ Entendido. ¿Cuál es el título correcto?\n\n` +
+    `Título actual: <i>${escapeHtml(ev.summary ?? '')}</i>\n\n` +
+    `Escríbelo o dímelo por voz:`,
+  );
 }
 
 // ─── Onboarding: usuarios nuevos ─────────────────────────────────────────────
@@ -558,7 +594,8 @@ async function processMessage(message, calendarId) {
     const { buffer, mimeType } = await downloadFile(fileData.file_id);
 
     voiceHistory = await getRecentEventHistory(chatId).catch(() => []);
-    const vocabularyHint = buildVocabularyHint(voiceHistory);
+    const corrections    = await getRecentCorrections(chatId).catch(() => []);
+    const vocabularyHint = buildVocabularyHint(voiceHistory, corrections);
 
     await sendMessage(chatId, '🧠 Transcribiendo con IA...');
     textContent = await transcribeAudio(buffer, mimeType, chatId, vocabularyHint);
@@ -959,6 +996,40 @@ async function handlePendingState(chatId, textContent, pending, calendarId, reso
       break;
     }
 
+    // ── Edición rápida de título desde botón ───────────────────────────────
+    case 'AWAITING_QUICK_TITLE_EDIT': {
+      const newTitle = textContent?.trim();
+      if (!newTitle) {
+        await sendMessage(chatId, '⚠️ No recibí un título. Por favor escríbelo o dímelo por voz.');
+        return;
+      }
+
+      const { eventId, originalSummary, originalDescription } = context;
+
+      await updateCalendarEvent(eventId, calendarId, { summary: newTitle });
+
+      await saveCorrection(chatId, originalSummary, newTitle);
+
+      await logEvent(chatId, calendarId, {
+        id:      eventId,
+        summary: newTitle,
+        action:  'edited',
+      });
+
+      const undoId = await saveUndoAction(chatId, calendarId, 'restore_edit', {
+        event_id:             eventId,
+        existing_summary:     originalSummary,
+        existing_description: originalDescription,
+      });
+
+      await clearConversation(chatId);
+      await sendMessage(chatId,
+        `✅ Título actualizado:\n📌 <b>${escapeHtml(newTitle)}</b>`,
+        undoId ? { reply_markup: undoKeyboard(undoId) } : {},
+      );
+      break;
+    }
+
     default:
       await clearConversation(chatId);
       await sendMessage(chatId, '↩️ Se reinició la conversación. ¿En qué puedo ayudarte?');
@@ -1145,7 +1216,7 @@ async function scheduleEvent(chatId, event, calendarId, transcription, queue = [
       `📅 ${escapeHtml(formatDateTime(event.start_time))}\n` +
       `⏱ Hasta las ${escapeHtml(formatTimeOnly(event.end_time))}\n\n` +
       `<a href="${created.htmlLink}">👉 Ver en Google Calendar</a>`,
-      undoId ? { reply_markup: undoKeyboard(undoId) } : {},
+      { reply_markup: agendarKeyboard(undoId, created.id) },
     );
 
     await proceedWithQueue(chatId, { queue, transcription }, calendarId);
@@ -1239,7 +1310,7 @@ async function overwriteEvent(chatId, event, slot, busyEvent, calendarId, transc
     `📅 ${escapeHtml(formatDateTime(slot.start))}\n` +
     `⏱ Hasta las ${escapeHtml(formatTimeOnly(slot.end))}\n\n` +
     `<a href="${created.htmlLink}">👉 Ver en Google Calendar</a>`,
-    undoId ? { reply_markup: undoKeyboard(undoId) } : {},
+    { reply_markup: agendarKeyboard(undoId, created.id) },
   );
 }
 
@@ -1274,7 +1345,7 @@ async function forceScheduleEvent(chatId, event, calendarId, transcription) {
     `⏱ Hasta las ${escapeHtml(formatTimeOnly(event.end_time))}\n\n` +
     `ℹ️ Este evento se superpone con otro existente.\n` +
     `<a href="${created.htmlLink}">👉 Ver en Google Calendar</a>`,
-    undoId ? { reply_markup: undoKeyboard(undoId) } : {},
+    { reply_markup: agendarKeyboard(undoId, created.id) },
   );
 }
 
@@ -1765,6 +1836,17 @@ function slotChoiceKeyboard({ hasSlot1, hasSlot2, hasBusyEvent }) {
 /** Teclado con un único botón "↩️ Deshacer" para revertir una acción reciente. */
 function undoKeyboard(undoId) {
   return { inline_keyboard: [[{ text: '↩️ Deshacer', callback_data: `undo:${undoId}` }]] };
+}
+
+/**
+ * Teclado post-agendar: "↩️ Deshacer" + "✏️ Editar título".
+ * Permite al usuario corregir el título si Whisper lo transcribió mal.
+ */
+function agendarKeyboard(undoId, eventId) {
+  const row = [];
+  if (undoId) row.push({ text: '↩️ Deshacer', callback_data: `undo:${undoId}` });
+  row.push({ text: '✏️ Editar título', callback_data: `edit_title:${eventId}` });
+  return { inline_keyboard: [row] };
 }
 
 // ─── Utilidades ───────────────────────────────────────────────────────────────
