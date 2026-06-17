@@ -203,7 +203,7 @@ async function handleCallbackQuery(callback) {
   const messageId = callback.message?.message_id;
   const [action, eventId] = (callback.data ?? '').split(':');
 
-  if (!chatId || !eventId) {
+  if (!chatId || (!eventId && action !== 'edit_title_pre')) {
     await answerCallbackQuery(callback.id).catch(() => {});
     return;
   }
