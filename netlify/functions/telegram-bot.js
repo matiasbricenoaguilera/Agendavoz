@@ -18,8 +18,9 @@
  * (ver BUTTON_ONLY_STATES) — la voz queda reservada para crear/consultar/cancelar/
  * mover/anotar/editar eventos y para completar día/hora en AWAITING_DATE/TIME/DATETIME.
  *
- * AWAITING_QUICK_TITLE_EDIT — iniciado por el botón "✏️ Editar título" post-agendar;
- * acepta texto o voz con el título corregido.
+ * AWAITING_PRE_TITLE_EDIT — iniciado por el botón "✏️ Editar título" en la confirmación
+ * previa a crear el evento; acepta texto o voz con el título corregido y vuelve a
+ * mostrar la confirmación con el título actualizado.
  */
 
 import { resolve } from 'path';
@@ -265,8 +266,8 @@ async function handleCallbackQuery(callback) {
     } else if (action === 'undo') {
       await handleUndoAction(callback.id, chatId, messageId, eventId, calendarId);
 
-    } else if (action === 'edit_title') {
-      await handleEditTitleCallback(callback.id, chatId, messageId, eventId, calendarId);
+    } else if (action === 'edit_title_pre') {
+      await handleEditTitlePreCallback(callback.id, chatId, messageId, calendarId);
 
     } else {
       await answerCallbackQuery(callback.id).catch(() => {});
@@ -390,31 +391,34 @@ async function handleUndoAction(callbackId, chatId, messageId, undoId, calendarI
   }
 }
 
-// ─── Editar título rápido desde botón ────────────────────────────────────────
+// ─── Editar título antes de confirmar el evento ──────────────────────────────
 
 /**
- * Inicia el flujo de edición rápida de título (botón "✏️ Editar título").
- * Busca el evento, guarda el estado AWAITING_QUICK_TITLE_EDIT y pide el nuevo título.
+ * Botón "✏️ Editar título" en el mensaje de confirmación previa a crear el evento.
+ * Lee el evento pendiente del estado AWAITING_CONFIRMATION y pide el título correcto.
  */
-async function handleEditTitleCallback(callbackId, chatId, messageId, eventId, calendarId) {
-  const ev = await getEventById(eventId, calendarId).catch(() => null);
-  if (!ev) {
-    await answerCallbackQuery(callbackId, '⚠️ No encontré ese evento en el calendario.', { show_alert: true }).catch(() => {});
+async function handleEditTitlePreCallback(callbackId, chatId, messageId, calendarId) {
+  const pending = await getConversation(chatId);
+  if (!pending || pending.state !== 'AWAITING_CONFIRMATION') {
+    await answerCallbackQuery(callbackId, '⚠️ No hay un evento pendiente de confirmación.', { show_alert: true }).catch(() => {});
     return;
   }
 
   await answerCallbackQuery(callbackId).catch(() => {});
   if (messageId) await editMessageReplyMarkup(chatId, messageId).catch(() => {});
 
-  await saveConversation(chatId, 'AWAITING_QUICK_TITLE_EDIT', {
-    eventId,
-    originalSummary:     ev.summary ?? '',
-    originalDescription: ev.description ?? '',
+  const { event, transcription, queue } = pending.context;
+
+  await saveConversation(chatId, 'AWAITING_PRE_TITLE_EDIT', {
+    event,
+    calendarId,
+    transcription,
+    queue: queue ?? [],
   });
 
   await sendMessage(chatId,
     `✏️ Entendido. ¿Cuál es el título correcto?\n\n` +
-    `Título actual: <i>${escapeHtml(ev.summary ?? '')}</i>\n\n` +
+    `Título actual: <i>${escapeHtml(event.summary ?? '')}</i>\n\n` +
     `Escríbelo o dímelo por voz:`,
   );
 }
@@ -997,36 +1001,19 @@ async function handlePendingState(chatId, textContent, pending, calendarId, reso
     }
 
     // ── Edición rápida de título desde botón ───────────────────────────────
-    case 'AWAITING_QUICK_TITLE_EDIT': {
+    case 'AWAITING_PRE_TITLE_EDIT': {
       const newTitle = textContent?.trim();
       if (!newTitle) {
         await sendMessage(chatId, '⚠️ No recibí un título. Por favor escríbelo o dímelo por voz.');
         return;
       }
 
-      const { eventId, originalSummary, originalDescription } = context;
+      const { event, transcription, queue } = context;
 
-      await updateCalendarEvent(eventId, calendarId, { summary: newTitle });
+      await saveCorrection(chatId, event.summary, newTitle);
 
-      await saveCorrection(chatId, originalSummary, newTitle);
-
-      await logEvent(chatId, calendarId, {
-        id:      eventId,
-        summary: newTitle,
-        action:  'edited',
-      });
-
-      const undoId = await saveUndoAction(chatId, calendarId, 'restore_edit', {
-        event_id:             eventId,
-        existing_summary:     originalSummary,
-        existing_description: originalDescription,
-      });
-
-      await clearConversation(chatId);
-      await sendMessage(chatId,
-        `✅ Título actualizado:\n📌 <b>${escapeHtml(newTitle)}</b>`,
-        undoId ? { reply_markup: undoKeyboard(undoId) } : {},
-      );
+      const updatedEvent = { ...event, summary: newTitle };
+      await askForConfirmation(chatId, updatedEvent, calendarId, transcription, queue ?? []);
       break;
     }
 
@@ -1167,7 +1154,7 @@ async function askForConfirmation(chatId, event, calendarId, transcription, queu
     `📌 <b>${escapeHtml(event.summary)}</b> ${categoryEmoji}\n` +
     `📅 ${escapeHtml(formatDateTime(event.start_time))}\n` +
     `⏱ Hasta las ${escapeHtml(formatTimeOnly(event.end_time))}${remaining}`,
-    { reply_markup: yesNoKeyboard('✅ Sí, agendar') },
+    { reply_markup: confirmationKeyboard() },
   );
 }
 
@@ -1216,7 +1203,7 @@ async function scheduleEvent(chatId, event, calendarId, transcription, queue = [
       `📅 ${escapeHtml(formatDateTime(event.start_time))}\n` +
       `⏱ Hasta las ${escapeHtml(formatTimeOnly(event.end_time))}\n\n` +
       `<a href="${created.htmlLink}">👉 Ver en Google Calendar</a>`,
-      { reply_markup: agendarKeyboard(undoId, created.id) },
+      { reply_markup: undoId ? undoKeyboard(undoId) : {} },
     );
 
     await proceedWithQueue(chatId, { queue, transcription }, calendarId);
@@ -1310,7 +1297,7 @@ async function overwriteEvent(chatId, event, slot, busyEvent, calendarId, transc
     `📅 ${escapeHtml(formatDateTime(slot.start))}\n` +
     `⏱ Hasta las ${escapeHtml(formatTimeOnly(slot.end))}\n\n` +
     `<a href="${created.htmlLink}">👉 Ver en Google Calendar</a>`,
-    { reply_markup: agendarKeyboard(undoId, created.id) },
+    { reply_markup: undoId ? undoKeyboard(undoId) : {} },
   );
 }
 
@@ -1345,7 +1332,7 @@ async function forceScheduleEvent(chatId, event, calendarId, transcription) {
     `⏱ Hasta las ${escapeHtml(formatTimeOnly(event.end_time))}\n\n` +
     `ℹ️ Este evento se superpone con otro existente.\n` +
     `<a href="${created.htmlLink}">👉 Ver en Google Calendar</a>`,
-    { reply_markup: agendarKeyboard(undoId, created.id) },
+    { reply_markup: undoId ? undoKeyboard(undoId) : {} },
   );
 }
 
@@ -1812,6 +1799,21 @@ function yesNoKeyboard(yesLabel = '✅ Sí') {
   };
 }
 
+/** Teclado de confirmación previa a agendar: Sí / Editar título / No. */
+function confirmationKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: '✅ Sí, agendar',    callback_data: 'reply:yes' },
+        { text: '✏️ Editar título', callback_data: 'edit_title_pre' },
+      ],
+      [
+        { text: '❌ No, cancelar',   callback_data: 'reply:no' },
+      ],
+    ],
+  };
+}
+
 /**
  * Teclado de elección de horario alternativo (usado en AWAITING_SLOT_CHOICE
  * y AWAITING_MOVE_SLOT_CHOICE): primera/segunda opción, reemplazar (si hay
@@ -1836,17 +1838,6 @@ function slotChoiceKeyboard({ hasSlot1, hasSlot2, hasBusyEvent }) {
 /** Teclado con un único botón "↩️ Deshacer" para revertir una acción reciente. */
 function undoKeyboard(undoId) {
   return { inline_keyboard: [[{ text: '↩️ Deshacer', callback_data: `undo:${undoId}` }]] };
-}
-
-/**
- * Teclado post-agendar: "↩️ Deshacer" + "✏️ Editar título".
- * Permite al usuario corregir el título si Whisper lo transcribió mal.
- */
-function agendarKeyboard(undoId, eventId) {
-  const row = [];
-  if (undoId) row.push({ text: '↩️ Deshacer', callback_data: `undo:${undoId}` });
-  row.push({ text: '✏️ Editar título', callback_data: `edit_title:${eventId}` });
-  return { inline_keyboard: [row] };
 }
 
 // ─── Utilidades ───────────────────────────────────────────────────────────────
