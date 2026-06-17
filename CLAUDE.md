@@ -75,7 +75,7 @@ After a successful `agendar`/`mover`/`anotar`/`editar`/`cancelar` action (includ
 
 ### Environment variables
 
-See `.env.example` for the full list with descriptions. Required (checked at runtime via `assertConfig`): `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`. Also used: `TELEGRAM_WEBHOOK_SECRET` (validates Telegram webhook origin), `OWNER_CHAT_ID`, `USER_CALENDARS` (legacy, see above), `ADMIN_PASSWORD`, `SITE_URL` (for magic link URLs, defaults to `https://agendavoz.netlify.app`).
+See `.env.example` for the full list with descriptions. Required (checked at runtime via `assertConfig`): `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`. Also used: `TELEGRAM_WEBHOOK_SECRET` (validates Telegram webhook origin), `OWNER_CHAT_ID`, `USER_CALENDARS` (legacy, see above), `ADMIN_PASSWORD`, `SITE_URL` (for magic link URLs, set in Netlify env vars).
 
 ### Database schema
 

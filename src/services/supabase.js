@@ -130,7 +130,7 @@ export async function generateMagicLink(telegramId) {
     expires_at:  expires.toISOString(),
   });
 
-  const baseUrl = process.env.SITE_URL ?? 'https://agendavoz.netlify.app';
+  const baseUrl = process.env.SITE_URL ?? 'https://agendavoz2.netlify.app';
   return `${baseUrl}/mi-agenda?token=${token}`;
 }
 
